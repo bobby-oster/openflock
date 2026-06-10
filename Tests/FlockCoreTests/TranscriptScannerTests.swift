@@ -85,7 +85,7 @@ final class TranscriptScannerTests: XCTestCase {
 
         try writeTranscript("proj/abc-123.jsonl", lines: """
         {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"\(old)","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":500}}}
-        {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"\(recent)","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":120}}}
+        {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"\(recent)","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":120,"cache_read_input_tokens":479}}}
         """)
 
         let snapshot = TranscriptScanner(projectsDirectory: projectsDir).scan(now: now)
@@ -93,9 +93,12 @@ final class TranscriptScannerTests: XCTestCase {
         // Only the recent turn lands in the event window.
         XCTAssertEqual(snapshot.recentEvents.count, 1)
         XCTAssertEqual(snapshot.recentEvents.first?.outputTokens, 120)
+        XCTAssertEqual(snapshot.recentEvents.first?.totalTokens, 600)
         // 120 output tokens in the trailing minute → 120/min → 2/s.
         XCTAssertEqual(snapshot.outputTokensPerMinute(window: 60, now: now), 120, accuracy: 0.01)
         XCTAssertEqual(snapshot.outputTokensPerSecond(window: 60, now: now), 2, accuracy: 0.01)
+        // Full rate counts cache: 600/min → 10/s.
+        XCTAssertEqual(snapshot.totalTokensPerSecond(window: 60, now: now), 10, accuracy: 0.01)
         // Lifetime usage still counts both turns.
         XCTAssertEqual(snapshot.sessions.first?.usage.outputTokens, 620)
     }
@@ -103,8 +106,10 @@ final class TranscriptScannerTests: XCTestCase {
     func testRateFormatting() {
         XCTAssertEqual(Format.rate(perSecond: 12.4), "12 tok/s")
         XCTAssertEqual(Format.rate(perSecond: 0.82), "0.8 tok/s")
+        XCTAssertEqual(Format.rate(perSecond: 4200), "4.2k tok/s")
         XCTAssertEqual(Format.rateCompact(perSecond: 42.0), "42/s")
         XCTAssertEqual(Format.rateCompact(perSecond: 3.26), "3.3/s")
+        XCTAssertEqual(Format.rateCompact(perSecond: 1_300_000), "1.3M/s")
     }
 
     func testIgnoresSyntheticModelName() throws {

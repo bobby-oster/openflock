@@ -1,13 +1,16 @@
 import Foundation
 
-/// One assistant turn's output, timestamped — the unit of throughput.
+/// One assistant turn's tokens, timestamped — the unit of throughput.
 public struct TokenEvent: Sendable {
     public let timestamp: Date
     public let outputTokens: Int
+    /// Everything the turn moved: input + output + cache read/creation.
+    public let totalTokens: Int
 
-    public init(timestamp: Date, outputTokens: Int) {
+    public init(timestamp: Date, outputTokens: Int, totalTokens: Int) {
         self.timestamp = timestamp
         self.outputTokens = outputTokens
+        self.totalTokens = totalTokens
     }
 }
 
@@ -28,16 +31,31 @@ public struct FlockSnapshot: Sendable {
 
     /// Output tokens per minute over the trailing window.
     public func outputTokensPerMinute(window: TimeInterval, now: Date? = nil) -> Double {
+        perMinute(window: window, now: now, of: \.outputTokens)
+    }
+
+    public func outputTokensPerSecond(window: TimeInterval = 60, now: Date? = nil) -> Double {
+        outputTokensPerMinute(window: window, now: now) / 60
+    }
+
+    /// Full-throughput tokens per minute (cache included) over the window.
+    public func totalTokensPerMinute(window: TimeInterval, now: Date? = nil) -> Double {
+        perMinute(window: window, now: now, of: \.totalTokens)
+    }
+
+    public func totalTokensPerSecond(window: TimeInterval = 60, now: Date? = nil) -> Double {
+        totalTokensPerMinute(window: window, now: now) / 60
+    }
+
+    private func perMinute(
+        window: TimeInterval, now: Date?, of value: KeyPath<TokenEvent, Int>
+    ) -> Double {
         guard window > 0 else { return 0 }
         let now = now ?? scannedAt
         let cutoff = now.addingTimeInterval(-window)
         let sum = recentEvents
             .filter { $0.timestamp >= cutoff && $0.timestamp <= now }
-            .reduce(0) { $0 + $1.outputTokens }
+            .reduce(0) { $0 + $1[keyPath: value] }
         return Double(sum) / (window / 60)
-    }
-
-    public func outputTokensPerSecond(window: TimeInterval = 60, now: Date? = nil) -> Double {
-        outputTokensPerMinute(window: window, now: now) / 60
     }
 }

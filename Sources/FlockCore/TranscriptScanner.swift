@@ -129,7 +129,10 @@ public struct TranscriptScanner: Sendable {
                     usage.add(u.tokenUsage)
                     if let cutoff = eventCutoffString, let ts = entry.timestamp, ts > cutoff,
                        let date = formatter?.date(from: ts) {
-                        events.append(TokenEvent(timestamp: date, outputTokens: u.outputTokens ?? 0))
+                        events.append(TokenEvent(
+                            timestamp: date,
+                            outputTokens: u.outputTokens ?? 0,
+                            totalTokens: u.tokenUsage.total))
                     }
                 }
             }

@@ -13,7 +13,7 @@ struct MenuBarLabel: View {
     private var text: String {
         var summary = model.menuBarSummary
         if showMenuBarRate, model.snapshot != nil {
-            summary += " " + Format.rateCompact(perSecond: model.outputPerSecondNow)
+            summary += " " + Format.rateCompact(perSecond: model.totalPerSecondNow)
         }
         return summary
     }

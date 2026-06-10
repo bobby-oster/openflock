@@ -38,14 +38,19 @@ final class FlockModel {
 
     var totalTokens: Int { sessions.reduce(0) { $0 + $1.usage.total } }
 
-    /// Burn rate over the last minute, in output tokens/second.
+    /// Full burn rate (cache included) over the last minute, tokens/second.
+    var totalPerSecondNow: Double {
+        snapshot?.totalTokensPerSecond(window: 60, now: Date()) ?? 0
+    }
+
+    /// Output-only burn rate over the last minute, tokens/second.
     var outputPerSecondNow: Double {
         snapshot?.outputTokensPerSecond(window: 60, now: Date()) ?? 0
     }
 
-    /// Trailing 10-minute average, in output tokens/minute.
-    var outputPerMinute10m: Double {
-        snapshot?.outputTokensPerMinute(window: 600, now: Date()) ?? 0
+    /// Trailing 10-minute full-rate average, tokens/minute.
+    var totalPerMinute10m: Double {
+        snapshot?.totalTokensPerMinute(window: 600, now: Date()) ?? 0
     }
 
     /// e.g. "3▲ 2●" — active and idle counts; app name before first scan.

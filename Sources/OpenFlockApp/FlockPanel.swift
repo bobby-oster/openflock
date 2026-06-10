@@ -56,19 +56,24 @@ struct FlockPanel: View {
             Image(systemName: "bolt.fill")
                 .foregroundStyle(.orange)
                 .font(.caption)
-            Text(Format.rate(perSecond: model.outputPerSecondNow))
-                .font(.callout)
-                .monospacedDigit()
-            Text("now")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(Format.rate(perSecond: model.totalPerSecondNow))
+                    .font(.callout)
+                    .monospacedDigit()
+                Text("now · \(Format.rateCompact(perSecond: model.outputPerSecondNow)) out")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
             Spacer()
-            Text("\(Format.tokens(Int(model.outputPerMinute10m)))/min")
-                .font(.callout)
-                .monospacedDigit()
-            Text("10m avg")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("\(Format.tokens(Int(model.totalPerMinute10m)))/min")
+                    .font(.callout)
+                    .monospacedDigit()
+                Text("10m avg")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -117,13 +122,14 @@ struct SessionRow: View {
                 .fill(stateColor)
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.slug ?? session.projectName)
+                Text(session.projectName)
                     .font(.callout)
                     .lineLimit(1)
                 Text(subtitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            .help(session.slug ?? session.id)
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
                 Text("\(Format.tokens(session.usage.outputTokens)) out")
