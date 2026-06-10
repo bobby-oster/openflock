@@ -92,11 +92,13 @@ final class TranscriptScannerTests: XCTestCase {
 
         // Only the recent turn lands in the event window.
         XCTAssertEqual(snapshot.recentEvents.count, 1)
-        XCTAssertEqual(snapshot.recentEvents.first?.outputTokens, 120)
-        XCTAssertEqual(snapshot.recentEvents.first?.totalTokens, 600)
+        XCTAssertEqual(snapshot.recentEvents.first?.usage.outputTokens, 120)
+        XCTAssertEqual(snapshot.recentEvents.first?.usage.total, 600)
         // 120 output tokens in the trailing minute → 120/min → 2/s.
         XCTAssertEqual(snapshot.outputTokensPerMinute(window: 60, now: now), 120, accuracy: 0.01)
         XCTAssertEqual(snapshot.outputTokensPerSecond(window: 60, now: now), 2, accuracy: 0.01)
+        // Fresh rate adds input but not cache: 121/min.
+        XCTAssertEqual(snapshot.freshTokensPerMinute(window: 60, now: now), 121, accuracy: 0.01)
         // Full rate counts cache: 600/min → 10/s.
         XCTAssertEqual(snapshot.totalTokensPerSecond(window: 60, now: now), 10, accuracy: 0.01)
         // Lifetime usage still counts both turns.

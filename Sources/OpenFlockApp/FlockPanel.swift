@@ -57,17 +57,17 @@ struct FlockPanel: View {
                 .foregroundStyle(.orange)
                 .font(.caption)
             VStack(alignment: .leading, spacing: 1) {
-                Text(Format.rate(perSecond: model.totalPerSecondNow))
+                Text(Format.rate(perSecond: model.freshPerSecondNow))
                     .font(.callout)
                     .monospacedDigit()
-                Text("now · \(Format.rateCompact(perSecond: model.outputPerSecondNow)) out")
+                Text("now · \(Format.rateCompact(perSecond: model.totalPerSecondNow)) w/ cache")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
-                Text("\(Format.tokens(Int(model.totalPerMinute10m)))/min")
+                Text("\(Format.tokens(Int(model.freshPerMinute10m)))/min")
                     .font(.callout)
                     .monospacedDigit()
                 Text("10m avg")

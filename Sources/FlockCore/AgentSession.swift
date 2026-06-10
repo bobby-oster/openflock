@@ -24,6 +24,9 @@ public struct TokenUsage: Equatable, Sendable {
         inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens
     }
 
+    /// Non-cache tokens: what the model freshly read and wrote this turn.
+    public var fresh: Int { inputTokens + outputTokens }
+
     public mutating func add(_ other: TokenUsage) {
         inputTokens += other.inputTokens
         outputTokens += other.outputTokens

@@ -3,14 +3,11 @@ import Foundation
 /// One assistant turn's tokens, timestamped — the unit of throughput.
 public struct TokenEvent: Sendable {
     public let timestamp: Date
-    public let outputTokens: Int
-    /// Everything the turn moved: input + output + cache read/creation.
-    public let totalTokens: Int
+    public let usage: TokenUsage
 
-    public init(timestamp: Date, outputTokens: Int, totalTokens: Int) {
+    public init(timestamp: Date, usage: TokenUsage) {
         self.timestamp = timestamp
-        self.outputTokens = outputTokens
-        self.totalTokens = totalTokens
+        self.usage = usage
     }
 }
 
@@ -29,6 +26,15 @@ public struct FlockSnapshot: Sendable {
         self.scannedAt = scannedAt
     }
 
+    /// Fresh tokens (input + output, no cache) per minute over the window.
+    public func freshTokensPerMinute(window: TimeInterval, now: Date? = nil) -> Double {
+        perMinute(window: window, now: now, of: \.fresh)
+    }
+
+    public func freshTokensPerSecond(window: TimeInterval = 60, now: Date? = nil) -> Double {
+        freshTokensPerMinute(window: window, now: now) / 60
+    }
+
     /// Output tokens per minute over the trailing window.
     public func outputTokensPerMinute(window: TimeInterval, now: Date? = nil) -> Double {
         perMinute(window: window, now: now, of: \.outputTokens)
@@ -40,7 +46,7 @@ public struct FlockSnapshot: Sendable {
 
     /// Full-throughput tokens per minute (cache included) over the window.
     public func totalTokensPerMinute(window: TimeInterval, now: Date? = nil) -> Double {
-        perMinute(window: window, now: now, of: \.totalTokens)
+        perMinute(window: window, now: now, of: \.total)
     }
 
     public func totalTokensPerSecond(window: TimeInterval = 60, now: Date? = nil) -> Double {
@@ -48,14 +54,14 @@ public struct FlockSnapshot: Sendable {
     }
 
     private func perMinute(
-        window: TimeInterval, now: Date?, of value: KeyPath<TokenEvent, Int>
+        window: TimeInterval, now: Date?, of value: KeyPath<TokenUsage, Int>
     ) -> Double {
         guard window > 0 else { return 0 }
         let now = now ?? scannedAt
         let cutoff = now.addingTimeInterval(-window)
         let sum = recentEvents
             .filter { $0.timestamp >= cutoff && $0.timestamp <= now }
-            .reduce(0) { $0 + $1[keyPath: value] }
+            .reduce(0) { $0 + $1.usage[keyPath: value] }
         return Double(sum) / (window / 60)
     }
 }
