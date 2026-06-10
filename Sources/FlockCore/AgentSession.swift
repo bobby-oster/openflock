@@ -32,18 +32,26 @@ public struct TokenUsage: Equatable, Sendable {
     }
 }
 
+/// One Claude Code session: the top-level transcript plus any sub-agent
+/// transcripts (`<sessionId>/subagents/agent-*.jsonl`) that share its id.
 public struct AgentSession: Identifiable, Sendable {
-    /// Claude Code session id (transcript filename stem).
+    /// Claude Code session id (top-level transcript filename stem).
     public let id: String
-    /// Working directory the agent runs in.
+    /// Working directory the session runs in.
     public let projectPath: String
     /// Human-readable session slug, when the transcript provides one.
     public let slug: String?
-    /// Most recent model seen in the transcript.
+    /// Most recent model seen in the top-level transcript.
     public let model: String?
+    /// Aggregate usage across the session and all its sub-agents.
     public let usage: TokenUsage
+    /// Most recent write across the session and all its sub-agents.
     public let lastActivity: Date
     public let state: AgentState
+    /// Sub-agent transcripts seen within the scan window.
+    public let subagentCount: Int
+    /// Sub-agents whose transcript was written to within the last minute.
+    public let activeSubagentCount: Int
 
     public var projectName: String {
         URL(fileURLWithPath: projectPath).lastPathComponent

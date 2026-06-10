@@ -1,7 +1,9 @@
 import Foundation
 
 /// Scans Claude Code transcripts (`~/.claude/projects/**/*.jsonl`) and
-/// aggregates one `AgentSession` per transcript file.
+/// aggregates one `AgentSession` per session, folding sub-agent transcripts
+/// (`<project>/<sessionId>/subagents/agent-*.jsonl`, which share the parent's
+/// `sessionId`) into their parent session.
 ///
 /// v0 re-reads matching files on every scan; incremental tailing comes later.
 public struct TranscriptScanner: Sendable {
@@ -26,21 +28,60 @@ public struct TranscriptScanner: Sendable {
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
-        var sessions: [AgentSession] = []
+        var files: [TranscriptFile] = []
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
             guard
                 let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
                     .contentModificationDate,
                 now.timeIntervalSince(modified) < recencyWindow,
-                let session = parseTranscript(at: url, modifiedAt: modified, now: now)
+                let file = parseTranscript(at: url, modifiedAt: modified)
             else { continue }
-            sessions.append(session)
+            files.append(file)
+        }
+
+        let sessions = Dictionary(grouping: files, by: \.sessionId).compactMap { id, members -> AgentSession? in
+            guard let newest = members.max(by: { $0.lastActivity < $1.lastActivity }) else { return nil }
+            let main = members.first { !$0.isSubagent }
+            let subagents = members.filter(\.isSubagent)
+
+            var usage = TokenUsage()
+            for member in members { usage.add(member.usage) }
+
+            let primary = main ?? newest
+            return AgentSession(
+                id: id,
+                projectPath: primary.cwd ?? "?",
+                slug: primary.slug,
+                model: primary.model ?? newest.model,
+                usage: usage,
+                lastActivity: newest.lastActivity,
+                state: AgentSession.state(forAge: now.timeIntervalSince(newest.lastActivity)),
+                subagentCount: subagents.count,
+                activeSubagentCount: subagents.filter {
+                    AgentSession.state(forAge: now.timeIntervalSince($0.lastActivity)) == .active
+                }.count
+            )
         }
         return sessions.sorted { $0.lastActivity > $1.lastActivity }
     }
 
-    func parseTranscript(at url: URL, modifiedAt: Date, now: Date) -> AgentSession? {
+    /// One parsed transcript file — either a session's top-level transcript
+    /// or a sub-agent transcript belonging to it.
+    struct TranscriptFile {
+        let sessionId: String
+        let isSubagent: Bool
+        let lastActivity: Date
+        var cwd: String?
+        var slug: String?
+        var model: String?
+        var usage = TokenUsage()
+    }
+
+    func parseTranscript(at url: URL, modifiedAt: Date) -> TranscriptFile? {
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+
+        let isSubagent = url.deletingLastPathComponent().lastPathComponent == "subagents"
+            || url.lastPathComponent.hasPrefix("agent-")
 
         let decoder = JSONDecoder()
         var usage = TokenUsage()
@@ -60,16 +101,16 @@ public struct TranscriptScanner: Sendable {
             }
         }
 
-        guard let id = sessionId ?? Optional(url.deletingPathExtension().lastPathComponent) else { return nil }
-        return AgentSession(
-            id: id,
-            projectPath: cwd ?? url.deletingLastPathComponent().lastPathComponent,
-            slug: slug,
-            model: model,
-            usage: usage,
-            lastActivity: modifiedAt,
-            state: AgentSession.state(forAge: now.timeIntervalSince(modifiedAt))
+        var file = TranscriptFile(
+            sessionId: sessionId ?? url.deletingPathExtension().lastPathComponent,
+            isSubagent: isSubagent,
+            lastActivity: modifiedAt
         )
+        file.cwd = cwd
+        file.slug = slug
+        file.model = model
+        file.usage = usage
+        return file
     }
 }
 

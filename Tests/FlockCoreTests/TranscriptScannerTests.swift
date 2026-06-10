@@ -2,34 +2,78 @@ import XCTest
 @testable import FlockCore
 
 final class TranscriptScannerTests: XCTestCase {
-    func testParsesAssistantUsageAndSessionMetadata() throws {
-        let lines = """
-        {"type":"user","sessionId":"abc-123","cwd":"/Users/dev/myproject","slug":"fix-the-bug","timestamp":"2026-06-10T20:00:00.000Z","message":{"role":"user"}}
-        {"type":"assistant","sessionId":"abc-123","cwd":"/Users/dev/myproject","timestamp":"2026-06-10T20:00:05.000Z","message":{"model":"claude-fable-5","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":1000,"cache_creation_input_tokens":25}}}
-        {"type":"assistant","sessionId":"abc-123","cwd":"/Users/dev/myproject","timestamp":"2026-06-10T20:00:10.000Z","message":{"model":"claude-fable-5","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":0}}}
-        not even json
-        """
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("openflock-test-\(UUID().uuidString).jsonl")
+    var projectsDir: URL!
+
+    override func setUpWithError() throws {
+        projectsDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openflock-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: projectsDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try FileManager.default.removeItem(at: projectsDir)
+    }
+
+    private func writeTranscript(_ relativePath: String, lines: String) throws {
+        let url = projectsDir.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try lines.data(using: .utf8)!.write(to: url)
-        defer { try? FileManager.default.removeItem(at: url) }
+    }
 
-        let now = Date()
-        let session = TranscriptScanner().parseTranscript(
-            at: url, modifiedAt: now.addingTimeInterval(-30), now: now)
+    private func assistantLine(
+        session: String, cwd: String = "/Users/dev/myproject", slug: String? = nil,
+        input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation: Int = 0
+    ) -> String {
+        let slugField = slug.map { "\"slug\":\"\($0)\"," } ?? ""
+        return """
+        {"type":"assistant","sessionId":"\(session)","cwd":"\(cwd)",\(slugField)"timestamp":"2026-06-10T20:00:00.000Z","message":{"model":"claude-fable-5","usage":{"input_tokens":\(input),"output_tokens":\(output),"cache_read_input_tokens":\(cacheRead),"cache_creation_input_tokens":\(cacheCreation)}}}
+        """
+    }
 
-        let s = try XCTUnwrap(session)
-        XCTAssertEqual(s.id, "abc-123")
+    func testGroupsSubagentsUnderParentSession() throws {
+        try writeTranscript("proj/abc-123.jsonl", lines: """
+        {"type":"user","sessionId":"abc-123","cwd":"/Users/dev/myproject","slug":"fix-the-bug","timestamp":"2026-06-10T20:00:00.000Z","message":{"role":"user"}}
+        \(assistantLine(session: "abc-123", slug: "fix-the-bug", input: 100, output: 50, cacheRead: 1000, cacheCreation: 25))
+        not even json
+        """)
+        try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
+            lines: assistantLine(session: "abc-123", input: 10, output: 5, cacheRead: 100))
+        try writeTranscript("proj/abc-123/subagents/agent-a2.jsonl",
+            lines: assistantLine(session: "abc-123", input: 1, output: 2))
+        // Unrelated second session in another project dir.
+        try writeTranscript("other/def-456.jsonl",
+            lines: assistantLine(session: "def-456", cwd: "/Users/dev/other", output: 7))
+
+        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan()
+
+        XCTAssertEqual(sessions.count, 2)
+        let s = try XCTUnwrap(sessions.first { $0.id == "abc-123" })
         XCTAssertEqual(s.projectPath, "/Users/dev/myproject")
         XCTAssertEqual(s.slug, "fix-the-bug")
         XCTAssertEqual(s.model, "claude-fable-5")
-        XCTAssertEqual(s.usage.inputTokens, 110)
-        XCTAssertEqual(s.usage.outputTokens, 55)
+        XCTAssertEqual(s.subagentCount, 2)
+        XCTAssertEqual(s.activeSubagentCount, 2) // just written ⇒ active
+        XCTAssertEqual(s.usage.inputTokens, 111)
+        XCTAssertEqual(s.usage.outputTokens, 57)
         XCTAssertEqual(s.usage.cacheReadTokens, 1100)
         XCTAssertEqual(s.usage.cacheCreationTokens, 25)
-        XCTAssertEqual(s.usage.total, 1290)
         XCTAssertEqual(s.state, .active)
         XCTAssertEqual(s.projectName, "myproject")
+
+        let other = try XCTUnwrap(sessions.first { $0.id == "def-456" })
+        XCTAssertEqual(other.subagentCount, 0)
+        XCTAssertEqual(other.usage.outputTokens, 7)
+    }
+
+    func testSessionIdsAreUnique() throws {
+        try writeTranscript("proj/abc-123.jsonl", lines: assistantLine(session: "abc-123", output: 1))
+        try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
+            lines: assistantLine(session: "abc-123", output: 2))
+
+        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan()
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(Set(sessions.map(\.id)).count, sessions.count)
     }
 
     func testStateInference() {

@@ -28,7 +28,7 @@ struct FlockPanel: View {
             Text("OpenFlock")
                 .font(.headline)
             Spacer()
-            Text("\(model.activeCount) active · \(model.idleCount) idle · \(Format.tokens(model.totalTokens)) tokens")
+            Text("\(model.activeCount) active · \(model.idleCount) idle · \(model.agentCount) agents · \(Format.tokens(model.totalTokens)) tok")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -71,7 +71,7 @@ struct SessionRow: View {
                 Text(session.slug ?? session.projectName)
                     .font(.callout)
                     .lineLimit(1)
-                Text(session.model.map(Format.modelShortName) ?? "unknown model")
+                Text(subtitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -86,6 +86,17 @@ struct SessionRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        if let model = session.model { parts.append(Format.modelShortName(model)) }
+        if session.subagentCount > 0 {
+            var sub = "\(session.subagentCount) subagents"
+            if session.activeSubagentCount > 0 { sub += " (\(session.activeSubagentCount) active)" }
+            parts.append(sub)
+        }
+        return parts.isEmpty ? "unknown model" : parts.joined(separator: " · ")
     }
 
     private var stateColor: Color {

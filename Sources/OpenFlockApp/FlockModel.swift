@@ -33,6 +33,9 @@ final class FlockModel {
     var activeCount: Int { sessions.filter { $0.state == .active }.count }
     var idleCount: Int { sessions.filter { $0.state == .idle }.count }
 
+    /// Sessions plus their sub-agents.
+    var agentCount: Int { sessions.reduce(0) { $0 + 1 + $1.subagentCount } }
+
     var totalTokens: Int { sessions.reduce(0) { $0 + $1.usage.total } }
 
     /// e.g. "3▲ 2●" — active and idle counts; "–" before first scan.
