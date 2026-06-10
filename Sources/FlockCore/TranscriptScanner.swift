@@ -74,8 +74,10 @@ public struct TranscriptScanner: Sendable {
                 }.count
             )
         }
+        // Empty shells (opened-and-abandoned sessions) are noise once stale.
+        let visible = sessions.filter { !($0.usage.total == 0 && $0.state == .stale) }
         return FlockSnapshot(
-            sessions: sessions.sorted { $0.lastActivity > $1.lastActivity },
+            sessions: visible.sorted { $0.lastActivity > $1.lastActivity },
             recentEvents: files.flatMap(\.events),
             scannedAt: now
         )
@@ -121,7 +123,8 @@ public struct TranscriptScanner: Sendable {
             cwd = entry.cwd ?? cwd
             slug = entry.slug ?? slug
             if let message = entry.message, entry.type == "assistant" {
-                model = message.model ?? model
+                // Compaction and other injected turns carry "<synthetic>".
+                if let m = message.model, m != "<synthetic>" { model = m }
                 if let u = message.usage {
                     usage.add(u.tokenUsage)
                     if let cutoff = eventCutoffString, let ts = entry.timestamp, ts > cutoff,

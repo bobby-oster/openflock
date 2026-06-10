@@ -126,12 +126,14 @@ struct SessionRow: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
-                Text(Format.tokens(session.usage.total))
+                Text("\(Format.tokens(session.usage.outputTokens)) out")
                     .font(.callout)
                     .monospacedDigit()
-                Text(session.lastActivity, style: .relative)
+                (Text("Σ\(Format.tokens(session.usage.total)) · ")
+                    + Text(session.lastActivity, style: .relative))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
         }
         .padding(.vertical, 2)

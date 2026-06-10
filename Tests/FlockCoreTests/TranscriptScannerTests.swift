@@ -107,6 +107,29 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(Format.rateCompact(perSecond: 3.26), "3.3/s")
     }
 
+    func testIgnoresSyntheticModelName() throws {
+        try writeTranscript("proj/abc-123.jsonl", lines: """
+        {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"2026-06-10T20:00:00.000Z","message":{"model":"claude-fable-5","usage":{"output_tokens":5}}}
+        {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"2026-06-10T20:01:00.000Z","message":{"model":"<synthetic>","usage":{"output_tokens":1}}}
+        """)
+        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
+        XCTAssertEqual(sessions.first?.model, "claude-fable-5")
+    }
+
+    func testHidesStaleZeroTokenSessions() throws {
+        let url = projectsDir.appendingPathComponent("proj/empty-1.jsonl")
+        try writeTranscript("proj/empty-1.jsonl", lines: """
+        {"type":"user","sessionId":"empty-1","cwd":"/p","timestamp":"2026-06-10T08:00:00.000Z","message":{"role":"user"}}
+        """)
+        // Backdate mtime so the session is stale but within the 24h window.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-2 * 3600)], ofItemAtPath: url.path)
+        try writeTranscript("proj/live-1.jsonl", lines: assistantLine(session: "live-1", output: 3))
+
+        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
+        XCTAssertEqual(sessions.map(\.id), ["live-1"])
+    }
+
     func testStateInference() {
         XCTAssertEqual(AgentSession.state(forAge: 5), .active)
         XCTAssertEqual(AgentSession.state(forAge: 59), .active)
