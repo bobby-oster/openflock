@@ -16,8 +16,7 @@ struct OpenFlockApp: App {
         MenuBarExtra {
             FlockPanel(model: model)
         } label: {
-            Text(model.menuBarSummary)
-                .monospacedDigit()
+            MenuBarLabel(model: model)
         }
         .menuBarExtraStyle(.window)
     }

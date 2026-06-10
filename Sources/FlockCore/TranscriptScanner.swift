@@ -10,23 +10,32 @@ public struct TranscriptScanner: Sendable {
     public var projectsDirectory: URL
     /// Transcripts whose mtime is older than this window are skipped entirely.
     public var recencyWindow: TimeInterval
+    /// How far back to collect per-turn token events for throughput math.
+    public var eventWindow: TimeInterval
 
     public init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects"),
-        recencyWindow: TimeInterval = 24 * 3600
+        recencyWindow: TimeInterval = 24 * 3600,
+        eventWindow: TimeInterval = 15 * 60
     ) {
         self.projectsDirectory = projectsDirectory
         self.recencyWindow = recencyWindow
+        self.eventWindow = eventWindow
     }
 
-    public func scan(now: Date = Date()) -> [AgentSession] {
+    public func scan(now: Date = Date()) -> FlockSnapshot {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: projectsDirectory,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
-        ) else { return [] }
+        ) else { return FlockSnapshot(sessions: [], recentEvents: [], scannedAt: now) }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let eventCutoff = now.addingTimeInterval(-eventWindow)
+        let cutoffString = formatter.string(from: eventCutoff)
 
         var files: [TranscriptFile] = []
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
@@ -34,7 +43,10 @@ public struct TranscriptScanner: Sendable {
                 let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
                     .contentModificationDate,
                 now.timeIntervalSince(modified) < recencyWindow,
-                let file = parseTranscript(at: url, modifiedAt: modified)
+                let file = parseTranscript(
+                    at: url, modifiedAt: modified,
+                    eventCutoffString: modified >= eventCutoff ? cutoffString : nil,
+                    formatter: formatter)
             else { continue }
             files.append(file)
         }
@@ -62,7 +74,11 @@ public struct TranscriptScanner: Sendable {
                 }.count
             )
         }
-        return sessions.sorted { $0.lastActivity > $1.lastActivity }
+        return FlockSnapshot(
+            sessions: sessions.sorted { $0.lastActivity > $1.lastActivity },
+            recentEvents: files.flatMap(\.events),
+            scannedAt: now
+        )
     }
 
     /// One parsed transcript file — either a session's top-level transcript
@@ -75,9 +91,17 @@ public struct TranscriptScanner: Sendable {
         var slug: String?
         var model: String?
         var usage = TokenUsage()
+        var events: [TokenEvent] = []
     }
 
-    func parseTranscript(at url: URL, modifiedAt: Date) -> TranscriptFile? {
+    /// `eventCutoffString` enables token-event collection: ISO8601 timestamps
+    /// are lexicographically ordered, so a raw string compare filters old
+    /// lines without the cost of date-parsing every one. Pass nil to skip.
+    func parseTranscript(
+        at url: URL, modifiedAt: Date,
+        eventCutoffString: String? = nil,
+        formatter: ISO8601DateFormatter? = nil
+    ) -> TranscriptFile? {
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
 
         let isSubagent = url.deletingLastPathComponent().lastPathComponent == "subagents"
@@ -85,6 +109,7 @@ public struct TranscriptScanner: Sendable {
 
         let decoder = JSONDecoder()
         var usage = TokenUsage()
+        var events: [TokenEvent] = []
         var model: String?
         var sessionId: String?
         var cwd: String?
@@ -97,7 +122,13 @@ public struct TranscriptScanner: Sendable {
             slug = entry.slug ?? slug
             if let message = entry.message, entry.type == "assistant" {
                 model = message.model ?? model
-                if let u = message.usage { usage.add(u.tokenUsage) }
+                if let u = message.usage {
+                    usage.add(u.tokenUsage)
+                    if let cutoff = eventCutoffString, let ts = entry.timestamp, ts > cutoff,
+                       let date = formatter?.date(from: ts) {
+                        events.append(TokenEvent(timestamp: date, outputTokens: u.outputTokens ?? 0))
+                    }
+                }
             }
         }
 
@@ -110,6 +141,7 @@ public struct TranscriptScanner: Sendable {
         file.slug = slug
         file.model = model
         file.usage = usage
+        file.events = events
         return file
     }
 }

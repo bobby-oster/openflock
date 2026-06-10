@@ -1,20 +1,37 @@
 import SwiftUI
 import FlockCore
 
+/// Panel component visibility, persisted across launches.
+enum ComponentToggles {
+    static let throughput = "component.throughput"
+    static let sessionList = "component.sessionList"
+    static let menuBarRate = "component.menuBarRate"
+}
+
 struct FlockPanel: View {
     let model: FlockModel
+
+    @AppStorage(ComponentToggles.throughput) private var showThroughput = true
+    @AppStorage(ComponentToggles.sessionList) private var showSessionList = true
+    @AppStorage(ComponentToggles.menuBarRate) private var showMenuBarRate = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            Divider()
-            if model.sessions.isEmpty {
-                Text("No agent sessions in the last 24h")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 24)
-            } else {
-                sessionList
+            if showThroughput {
+                Divider()
+                throughput
+            }
+            if showSessionList {
+                Divider()
+                if model.sessions.isEmpty {
+                    Text("No agent sessions in the last 24h")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 24)
+                } else {
+                    sessionList
+                }
             }
             Divider()
             footer
@@ -28,8 +45,29 @@ struct FlockPanel: View {
             Text("OpenFlock")
                 .font(.headline)
             Spacer()
-            Text("\(model.activeCount) active · \(model.idleCount) idle · \(model.agentCount) agents · \(Format.tokens(model.totalTokens)) tok")
+            Text("\(model.activeCount) active · \(model.idleCount) idle · \(model.agentCount) agents")
                 .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var throughput: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "bolt.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            Text(Format.rate(perSecond: model.outputPerSecondNow))
+                .font(.callout)
+                .monospacedDigit()
+            Text("now")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("\(Format.tokens(Int(model.outputPerMinute10m)))/min")
+                .font(.callout)
+                .monospacedDigit()
+            Text("10m avg")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
         }
     }
@@ -42,7 +80,9 @@ struct FlockPanel: View {
                 }
             }
         }
-        .frame(maxHeight: 320)
+        // ScrollView collapses to zero height inside a MenuBarExtra window
+        // unless given an explicit frame.
+        .frame(height: min(CGFloat(model.sessions.count) * 42, 320))
     }
 
     private var footer: some View {
@@ -53,6 +93,15 @@ struct FlockPanel: View {
                     .foregroundStyle(.tertiary)
             }
             Spacer()
+            Menu {
+                Toggle("Throughput", isOn: $showThroughput)
+                Toggle("Session list", isOn: $showSessionList)
+                Toggle("Burn rate in menu bar", isOn: $showMenuBarRate)
+            } label: {
+                Image(systemName: "switch.2")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .controlSize(.small)
         }

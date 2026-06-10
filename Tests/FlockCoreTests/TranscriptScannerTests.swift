@@ -45,7 +45,7 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("other/def-456.jsonl",
             lines: assistantLine(session: "def-456", cwd: "/Users/dev/other", output: 7))
 
-        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan()
+        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
 
         XCTAssertEqual(sessions.count, 2)
         let s = try XCTUnwrap(sessions.first { $0.id == "abc-123" })
@@ -71,9 +71,40 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
             lines: assistantLine(session: "abc-123", output: 2))
 
-        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan()
+        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(Set(sessions.map(\.id)).count, sessions.count)
+    }
+
+    func testCollectsRecentTokenEventsForThroughput() throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = Date()
+        let recent = formatter.string(from: now.addingTimeInterval(-30))
+        let old = formatter.string(from: now.addingTimeInterval(-3600))
+
+        try writeTranscript("proj/abc-123.jsonl", lines: """
+        {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"\(old)","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":500}}}
+        {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"\(recent)","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":120}}}
+        """)
+
+        let snapshot = TranscriptScanner(projectsDirectory: projectsDir).scan(now: now)
+
+        // Only the recent turn lands in the event window.
+        XCTAssertEqual(snapshot.recentEvents.count, 1)
+        XCTAssertEqual(snapshot.recentEvents.first?.outputTokens, 120)
+        // 120 output tokens in the trailing minute → 120/min → 2/s.
+        XCTAssertEqual(snapshot.outputTokensPerMinute(window: 60, now: now), 120, accuracy: 0.01)
+        XCTAssertEqual(snapshot.outputTokensPerSecond(window: 60, now: now), 2, accuracy: 0.01)
+        // Lifetime usage still counts both turns.
+        XCTAssertEqual(snapshot.sessions.first?.usage.outputTokens, 620)
+    }
+
+    func testRateFormatting() {
+        XCTAssertEqual(Format.rate(perSecond: 12.4), "12 tok/s")
+        XCTAssertEqual(Format.rate(perSecond: 0.82), "0.8 tok/s")
+        XCTAssertEqual(Format.rateCompact(perSecond: 42.0), "42/s")
+        XCTAssertEqual(Format.rateCompact(perSecond: 3.26), "3.3/s")
     }
 
     func testStateInference() {
