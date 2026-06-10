@@ -20,8 +20,22 @@ you'll hit your weekly limit by Thursday — you decide what to do about it.
 
 ## Status
 
-Pre-alpha. Naming is settled; the first lines of real code are not yet written.
-macOS first.
+Pre-alpha, but running. A SwiftPM workspace with a `FlockCore` library and a
+macOS menu bar app (`OpenFlockApp`) is in place. What works today:
+
+- Scans Claude Code transcripts to find sessions, grouping sub-agent
+  transcripts under their parent session.
+- Session list titled by project directory, leading with output tokens
+  (cache-inclusive totals on the secondary line); synthetic and empty
+  sessions are filtered out.
+- Throughput: fresh-token (input + output) burn rate now and as a 10-minute
+  average, with cache-inclusive rate as a secondary figure and an optional
+  compact rate in the menu bar label.
+- Panel components (throughput, session list, menu bar rate) individually
+  toggleable, persisted across launches.
+
+Not yet built: usage-limit tracking, blocked-waiting-on-you detection, and
+anything beyond Claude Code terminal sessions. macOS first.
 
 ## Name styling
 
