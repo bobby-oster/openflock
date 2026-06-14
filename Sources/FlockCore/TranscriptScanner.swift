@@ -60,6 +60,9 @@ public struct TranscriptScanner: Sendable {
             for member in members { usage.add(member.usage) }
 
             let primary = main ?? newest
+            func state(of file: TranscriptFile) -> AgentState {
+                AgentSession.state(last: file.lastEvent, age: now.timeIntervalSince(file.lastActivity))
+            }
             return AgentSession(
                 id: id,
                 projectPath: primary.cwd ?? "?",
@@ -67,11 +70,12 @@ public struct TranscriptScanner: Sendable {
                 model: primary.model ?? newest.model,
                 usage: usage,
                 lastActivity: newest.lastActivity,
-                state: AgentSession.state(forAge: now.timeIntervalSince(newest.lastActivity)),
+                // The most recently active member drives the session's state:
+                // a running sub-agent keeps the session `.working` even while
+                // the parent's Task tool call sits pending.
+                state: state(of: newest),
                 subagentCount: subagents.count,
-                activeSubagentCount: subagents.filter {
-                    AgentSession.state(forAge: now.timeIntervalSince($0.lastActivity)) == .active
-                }.count
+                activeSubagentCount: subagents.filter { state(of: $0) == .working }.count
             )
         }
         // Empty shells (opened-and-abandoned sessions) are noise once stale.
@@ -88,7 +92,10 @@ public struct TranscriptScanner: Sendable {
     struct TranscriptFile {
         let sessionId: String
         let isSubagent: Bool
+        /// Timestamp of the last model event (not the file's mtime).
         let lastActivity: Date
+        /// Shape of that last model event, for state classification.
+        var lastEvent: AgentSession.LastEvent?
         var cwd: String?
         var slug: String?
         var model: String?
@@ -116,13 +123,21 @@ public struct TranscriptScanner: Sendable {
         var sessionId: String?
         var cwd: String?
         var slug: String?
+        // The shape and timestamp of the last conversation event (assistant
+        // turn or user/tool-result line). Housekeeping lines — titles,
+        // file-history snapshots, mode changes — are skipped so they can't
+        // masquerade as model activity.
+        var lastEvent: AgentSession.LastEvent?
+        var lastEventTimestamp: String?
 
         for line in data.split(separator: UInt8(ascii: "\n")) {
             guard let entry = try? decoder.decode(TranscriptLine.self, from: Data(line)) else { continue }
             sessionId = entry.sessionId ?? sessionId
             cwd = entry.cwd ?? cwd
             slug = entry.slug ?? slug
-            if let message = entry.message, entry.type == "assistant" {
+            switch entry.type {
+            case "assistant"?:
+                guard let message = entry.message else { break }
                 // Compaction and other injected turns carry "<synthetic>".
                 if let m = message.model, m != "<synthetic>" { model = m }
                 if let u = message.usage {
@@ -132,14 +147,30 @@ public struct TranscriptScanner: Sendable {
                         events.append(TokenEvent(timestamp: date, usage: u.tokenUsage))
                     }
                 }
+                if message.stopReason == "end_turn" {
+                    lastEvent = .turnEnded
+                } else if message.content?.containsToolUse == true {
+                    lastEvent = .toolPending
+                } else {
+                    lastEvent = .streaming
+                }
+                lastEventTimestamp = entry.timestamp ?? lastEventTimestamp
+            case "user"?:
+                // A prompt or a tool result — either way the model is, or is
+                // about to be, producing. Not a turn-ending event.
+                lastEvent = .streaming
+                lastEventTimestamp = entry.timestamp ?? lastEventTimestamp
+            default:
+                break  // housekeeping line — not model activity
             }
         }
 
         var file = TranscriptFile(
             sessionId: sessionId ?? url.deletingPathExtension().lastPathComponent,
             isSubagent: isSubagent,
-            lastActivity: modifiedAt
+            lastActivity: lastEventTimestamp.flatMap { formatter?.date(from: $0) } ?? modifiedAt
         )
+        file.lastEvent = lastEvent
         file.cwd = cwd
         file.slug = slug
         file.model = model
@@ -155,6 +186,38 @@ struct TranscriptLine: Decodable {
     struct Message: Decodable {
         let model: String?
         let usage: Usage?
+        let stopReason: String?
+        let content: Content?
+
+        enum CodingKeys: String, CodingKey {
+            case model, usage, content
+            case stopReason = "stop_reason"
+        }
+    }
+
+    /// A message's `content` is either a plain string or an array of typed
+    /// blocks. We only need to know whether a `tool_use` block is present.
+    enum Content: Decodable {
+        case text
+        case blocks([Block])
+
+        struct Block: Decodable { let type: String? }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let blocks = try? container.decode([Block].self) {
+                self = .blocks(blocks)
+            } else {
+                self = .text
+            }
+        }
+
+        var containsToolUse: Bool {
+            if case .blocks(let blocks) = self {
+                return blocks.contains { $0.type == "tool_use" }
+            }
+            return false
+        }
     }
 
     struct Usage: Decodable {

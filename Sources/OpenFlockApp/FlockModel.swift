@@ -30,8 +30,10 @@ final class FlockModel {
     var sessions: [AgentSession] { snapshot?.sessions ?? [] }
     var lastScan: Date? { snapshot?.scannedAt }
 
-    var activeCount: Int { sessions.filter { $0.state == .active }.count }
-    var idleCount: Int { sessions.filter { $0.state == .idle }.count }
+    var workingCount: Int { sessions.filter { $0.state == .working }.count }
+    var waitingCount: Int { sessions.filter { $0.state == .waiting }.count }
+    var blockedCount: Int { sessions.filter { $0.state == .blocked }.count }
+    var staleCount: Int { sessions.filter { $0.state == .stale }.count }
 
     /// Sessions plus their sub-agents.
     var agentCount: Int { sessions.reduce(0) { $0 + 1 + $1.subagentCount } }
@@ -53,9 +55,7 @@ final class FlockModel {
         snapshot?.freshTokensPerMinute(window: 600, now: Date()) ?? 0
     }
 
-    /// e.g. "3▲ 2●" — active and idle counts; app name before first scan.
-    var menuBarSummary: String {
-        guard snapshot != nil else { return "OpenFlock" }
-        return "\(activeCount)▲ \(idleCount)●"
-    }
+    /// Whether a scan has completed yet — the menu bar shows the app name
+    /// until the first snapshot lands.
+    var hasScanned: Bool { snapshot != nil }
 }
