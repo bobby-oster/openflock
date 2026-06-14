@@ -1,7 +1,17 @@
-# OpenFlock
-
-Watch your flock of AI coding agents: throughput, token burn, usage limits, and
-who needs you.
+<div align="center">
+  <img src="assets/openflock-icon.png" alt="OpenFlock" width="150">
+  <h1>OpenFlock</h1>
+  <p><strong>Watch your flock of AI coding agents:<br>
+  throughput, token burn, usage limits, and who needs you.</strong></p>
+  <p>
+    <img alt="Platform" src="https://img.shields.io/badge/macOS-14%2B-111827?style=for-the-badge">
+    <img alt="Swift" src="https://img.shields.io/badge/Swift-5.9-F05138?style=for-the-badge&logo=swift&logoColor=white">
+    <img alt="Status" src="https://img.shields.io/badge/status-pre--alpha-4F46E5?style=for-the-badge">
+    <img alt="Watches" src="https://img.shields.io/badge/watches-Claude_Code-2563EB?style=for-the-badge">
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-111827?style=for-the-badge"></a>
+  </p>
+  <p><a href="#why">Why</a> · <a href="#status">Status</a> · <a href="#license">License</a></p>
+</div>
 
 ## Why
 
