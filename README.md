@@ -10,7 +10,7 @@
     <img alt="Watches" src="https://img.shields.io/badge/watches-Claude_Code-2563EB?style=for-the-badge">
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-111827?style=for-the-badge"></a>
   </p>
-  <p><a href="#why">Why</a> · <a href="#status">Status</a> · <a href="#license">License</a></p>
+  <p><a href="#why">Why</a> · <a href="#install">Install</a> · <a href="#status">Status</a> · <a href="#license">License</a></p>
 </div>
 
 ## Why
@@ -27,6 +27,24 @@ web and mobile eventually — there's no single glanceable place that answers:
 Session control already exists (Claude Code's Agent View). OpenFlock is the
 **observation and economics layer**: it tells you an agent stopped or that
 you'll hit your weekly limit by Thursday — you decide what to do about it.
+
+## Install
+
+```sh
+brew tap bobby-oster/openflock
+brew trust bobby-oster/openflock   # Homebrew 6+ requires trusting third-party taps
+brew install --cask openflock
+```
+
+OpenFlock is ad-hoc signed but not yet notarized, so macOS Gatekeeper blocks the
+first launch. After installing, clear the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/OpenFlock.app
+```
+
+or open it once via **System Settings → Privacy & Security → "Open Anyway"**.
+Universal binary (Apple Silicon + Intel); requires macOS 14 (Sonoma) or later.
 
 ## Status
 
