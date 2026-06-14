@@ -45,10 +45,21 @@ struct FlockPanel: View {
             Text("OpenFlock")
                 .font(.headline)
             Spacer()
-            Text("\(model.activeCount) active · \(model.idleCount) idle · \(model.agentCount) agents")
+            Text(headerSummary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Attention-first counts, zero states omitted: "1 blocked · 2 working · 5 agents".
+    private var headerSummary: String {
+        var parts: [String] = []
+        if model.blockedCount > 0 { parts.append("\(model.blockedCount) blocked") }
+        if model.waitingCount > 0 { parts.append("\(model.waitingCount) waiting") }
+        if model.workingCount > 0 { parts.append("\(model.workingCount) working") }
+        if model.staleCount > 0 { parts.append("\(model.staleCount) stale") }
+        parts.append("\(model.agentCount) agents")
+        return parts.joined(separator: " · ")
     }
 
     private var throughput: some View {
@@ -119,7 +130,7 @@ struct SessionRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(stateColor)
+                .fill(session.state.color)
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.projectName)
@@ -127,7 +138,7 @@ struct SessionRow: View {
                     .lineLimit(1)
                 Text(subtitle)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             .help(session.slug ?? session.id)
             Spacer()
@@ -145,7 +156,7 @@ struct SessionRow: View {
         .padding(.vertical, 2)
     }
 
-    private var subtitle: String {
+    private var subtitle: AttributedString {
         var parts: [String] = []
         if let model = session.model { parts.append(Format.modelShortName(model)) }
         if session.subagentCount > 0 {
@@ -153,14 +164,19 @@ struct SessionRow: View {
             if session.activeSubagentCount > 0 { sub += " (\(session.activeSubagentCount) active)" }
             parts.append(sub)
         }
-        return parts.isEmpty ? "unknown model" : parts.joined(separator: " · ")
-    }
+        let detail = parts.isEmpty ? "unknown model" : parts.joined(separator: " · ")
 
-    private var stateColor: Color {
-        switch session.state {
-        case .active: .green
-        case .idle: .yellow
-        case .stale: .secondary.opacity(0.4)
+        var result = AttributedString()
+        // Lead the actionable states with a colored word; working/stale don't
+        // need one — the dot already says it.
+        if session.state == .blocked || session.state == .waiting {
+            var badge = AttributedString(session.state.label + " · ")
+            badge.foregroundColor = session.state.color
+            result += badge
         }
+        var rest = AttributedString(detail)
+        rest.foregroundColor = .secondary
+        result += rest
+        return result
     }
 }

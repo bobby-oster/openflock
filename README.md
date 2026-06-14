@@ -25,6 +25,10 @@ macOS menu bar app (`OpenFlockApp`) is in place. What works today:
 
 - Scans Claude Code transcripts to find sessions, grouping sub-agent
   transcripts under their parent session.
+- Per-agent state read from the shape of the last transcript event, not file
+  mtime: **working** (mid-turn), **waiting** (turn ended, your move),
+  **blocked** (a tool call left pending — usually a permission prompt), and
+  **stale**. The menu bar leads with whatever needs attention.
 - Session list titled by project directory, leading with output tokens
   (cache-inclusive totals on the secondary line); synthetic and empty
   sessions are filtered out.
@@ -34,8 +38,8 @@ macOS menu bar app (`OpenFlockApp`) is in place. What works today:
 - Panel components (throughput, session list, menu bar rate) individually
   toggleable, persisted across launches.
 
-Not yet built: usage-limit tracking, blocked-waiting-on-you detection, and
-anything beyond Claude Code terminal sessions. macOS first.
+Not yet built: usage-limit tracking and anything beyond Claude Code terminal
+sessions. macOS first.
 
 ## Name styling
 

@@ -1,14 +1,19 @@
 import Foundation
 
-/// Activity state inferred from transcript recency.
-/// Blocked detection (unanswered permission request as the last transcript
-/// event) is a planned refinement; recency is the v0 heuristic.
+/// What an agent is doing, inferred from the *shape* of the last model event
+/// in its transcript — not from raw file-modification time. (Housekeeping
+/// lines like titles and file-history snapshots bump mtime without the model
+/// doing anything, and a single working turn can stay silent for many minutes;
+/// both fool a pure-recency heuristic, so we read the transcript instead.)
 public enum AgentState: String, Sendable, CaseIterable {
-    /// Transcript written to within the last minute.
-    case active
-    /// Recent session, but no writes for over a minute.
-    case idle
-    /// No writes for over an hour.
+    /// Mid-turn: the model is streaming output or running a tool. Green ▲.
+    case working
+    /// The last turn ended (`stop_reason: end_turn`) — waiting on you. Yellow ●.
+    case waiting
+    /// A tool call has been pending with no result past `blockedThreshold` —
+    /// almost always an unanswered permission prompt. Red ■.
+    case blocked
+    /// No model activity for over `staleThreshold` — backgrounded/abandoned. Gray.
     case stale
 }
 
@@ -48,23 +53,48 @@ public struct AgentSession: Identifiable, Sendable {
     public let model: String?
     /// Aggregate usage across the session and all its sub-agents.
     public let usage: TokenUsage
-    /// Most recent write across the session and all its sub-agents.
+    /// Timestamp of the most recent *model* event (assistant turn or tool
+    /// result) across the session and its sub-agents — not the file's mtime,
+    /// which housekeeping writes bump without the model doing anything.
     public let lastActivity: Date
     public let state: AgentState
     /// Sub-agent transcripts seen within the scan window.
     public let subagentCount: Int
-    /// Sub-agents whose transcript was written to within the last minute.
+    /// Sub-agents currently in the `.working` state.
     public let activeSubagentCount: Int
 
     public var projectName: String {
         URL(fileURLWithPath: projectPath).lastPathComponent
     }
 
-    public static func state(forAge age: TimeInterval) -> AgentState {
-        switch age {
-        case ..<60: .active
-        case ..<3600: .idle
-        default: .stale
+    /// The shape of the last model event in a transcript — the input to state
+    /// classification. Derived from `stop_reason` and whether a tool call is
+    /// still awaiting its result.
+    public enum LastEvent: Sendable {
+        /// Streaming output, or a tool result just landed — model is producing.
+        case streaming
+        /// `stop_reason: end_turn` — the turn finished, waiting on the user.
+        case turnEnded
+        /// A tool call with no result yet — running if fresh, blocked if not.
+        case toolPending
+    }
+
+    /// A pending tool call older than this is treated as blocked (an
+    /// unanswered permission prompt). Sits above the p99 tool latency (~65s),
+    /// so genuinely slow tools rarely trip it — and when they do, the next
+    /// scan clears it the moment the result lands.
+    public static let blockedThreshold: TimeInterval = 90
+    /// No model activity for longer than this ⇒ stale (backgrounded/abandoned).
+    public static let staleThreshold: TimeInterval = 3600
+
+    /// Classify an agent from the shape of its last model event and how long
+    /// ago that event occurred. A nil `last` means no model events at all.
+    public static func state(last: LastEvent?, age: TimeInterval) -> AgentState {
+        guard let last, age < staleThreshold else { return .stale }
+        switch last {
+        case .streaming: return .working
+        case .turnEnded: return .waiting
+        case .toolPending: return age < blockedThreshold ? .working : .blocked
         }
     }
 }
