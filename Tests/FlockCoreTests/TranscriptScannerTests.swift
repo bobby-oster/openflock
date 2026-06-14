@@ -27,6 +27,12 @@ final class TranscriptScannerTests: XCTestCase {
         return f.string(from: date)
     }
 
+    private func fixtureFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }
+
     private func assistantLine(
         session: String, cwd: String = "/Users/dev/myproject", slug: String? = nil,
         input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation: Int = 0,
@@ -78,8 +84,7 @@ final class TranscriptScannerTests: XCTestCase {
     }
 
     func testParsesTranscriptSummaryFromData() throws {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let formatter = fixtureFormatter()
         let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-10T20:00:00.000Z"))
         let url = URL(fileURLWithPath: "session-0001.jsonl")
         let data = """
@@ -107,6 +112,68 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(summary.usage.cacheCreationTokens, 4)
         XCTAssertEqual(summary.lastEvent, .turnEnded)
         XCTAssertEqual(summary.lastActivity, formatter.date(from: "2026-06-10T20:01:00.000Z"))
+    }
+
+    func testParsesSimpleSessionFixture() throws {
+        let formatter = fixtureFormatter()
+        let data = try TranscriptFixtureLoader.data(caseName: "simple-session")
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:00:10.000Z"))
+
+        let summary = try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "simple-session.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        XCTAssertEqual(summary.sessionId, "session-0001")
+        XCTAssertFalse(summary.isSubagent)
+        XCTAssertEqual(summary.cwd, "/Users/dev/example")
+        XCTAssertEqual(summary.slug, "example-task")
+        XCTAssertEqual(summary.model, "claude-fable-5")
+        XCTAssertEqual(summary.usage.inputTokens, 11)
+        XCTAssertEqual(summary.usage.outputTokens, 7)
+        XCTAssertEqual(summary.usage.cacheReadTokens, 23)
+        XCTAssertEqual(summary.usage.cacheCreationTokens, 3)
+        XCTAssertEqual(summary.lastEvent, .turnEnded)
+    }
+
+    func testParsesSubagentFixture() throws {
+        let formatter = fixtureFormatter()
+        let data = try TranscriptFixtureLoader.data(caseName: "subagents")
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:01:05.000Z"))
+
+        let summary = try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "session-0002/subagents/agent-0001.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        XCTAssertEqual(summary.sessionId, "session-0002")
+        XCTAssertTrue(summary.isSubagent)
+        XCTAssertEqual(summary.cwd, "/Users/dev/example")
+        XCTAssertEqual(summary.slug, "delegate-example")
+        XCTAssertEqual(summary.model, "claude-fable-5")
+        XCTAssertEqual(summary.usage.total, 20)
+        XCTAssertEqual(summary.lastEvent, .toolPending)
+    }
+
+    func testPermissionPromptFixtureClassifiesAsBlocked() throws {
+        let formatter = fixtureFormatter()
+        let now = try XCTUnwrap(formatter.date(from: "2026-06-14T12:05:00.000Z"))
+        let fixture = try TranscriptFixtureLoader.text(caseName: "permission-prompt-blocked")
+        try writeTranscript("proj/session-0003.jsonl", lines: fixture)
+        let url = projectsDir.appendingPathComponent("proj/session-0003.jsonl")
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
+
+        let session = try XCTUnwrap(
+            TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions.first)
+
+        XCTAssertEqual(session.id, "session-0003")
+        XCTAssertEqual(session.projectPath, "/Users/dev/example")
+        XCTAssertEqual(session.slug, "permission-example")
+        XCTAssertEqual(session.model, "claude-fable-5")
+        XCTAssertEqual(session.usage.total, 21)
+        XCTAssertEqual(session.state, .blocked)
     }
 
     func testSessionIdsAreUnique() throws {
