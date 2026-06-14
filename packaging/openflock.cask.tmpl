@@ -1,0 +1,32 @@
+cask "openflock" do
+  version "{{VERSION}}"
+  sha256 "{{SHA256}}"
+
+  url "https://github.com/bobby-oster/openflock/releases/download/v#{version}/OpenFlock-#{version}.zip"
+  name "OpenFlock"
+  desc "Menu-bar dashboard for your fleet of AI coding agents"
+  homepage "https://github.com/bobby-oster/openflock"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  depends_on macos: ">= :sonoma"
+
+  app "OpenFlock.app"
+
+  caveats <<~EOS
+    OpenFlock is ad-hoc signed, not yet notarized. If macOS blocks the first
+    launch, either reinstall without quarantine:
+
+      brew install --cask --no-quarantine openflock
+
+    or open it once via System Settings → Privacy & Security → "Open Anyway".
+  EOS
+
+  zap trash: [
+    "~/Library/Preferences/ai.openflock.OpenFlock.plist",
+    "~/Library/Saved Application State/ai.openflock.OpenFlock.savedState",
+  ]
+end

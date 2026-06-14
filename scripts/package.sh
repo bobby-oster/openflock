@@ -14,10 +14,29 @@ BUILD="${1:-1}"
 BUNDLE="dist/${APP_NAME}.app"
 
 echo "==> Building ${APP_NAME} ${VERSION} (build ${BUILD})"
-swift build -c release
 
-BIN=".build/release/${APP_NAME}"
-[ -f "$BIN" ] || { echo "error: built binary not found at $BIN" >&2; exit 1; }
+# Prefer a universal (arm64 + x86_64) binary so releases run on Intel and
+# Apple Silicon. Multi-arch needs Xcode's xcbuild (Command Line Tools can't);
+# fall back to a native single-arch build if full Xcode isn't available.
+UNIVERSAL=1
+if [[ "$(xcode-select -p 2>/dev/null)" != *Xcode.app* ]]; then
+    if [[ -d /Applications/Xcode.app ]]; then
+        export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+    else
+        echo "    note: full Xcode not found — building native arch only" >&2
+        UNIVERSAL=0
+    fi
+fi
+
+if [[ "$UNIVERSAL" == 1 ]]; then
+    swift build -c release --arch arm64 --arch x86_64
+    BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/${APP_NAME}"
+else
+    swift build -c release
+    BIN="$(swift build -c release --show-bin-path)/${APP_NAME}"
+fi
+[[ -f "$BIN" ]] || { echo "error: built binary not found at $BIN" >&2; exit 1; }
+echo "==> Binary archs: $(lipo -archs "$BIN" 2>/dev/null || echo native)"
 
 echo "==> Assembling ${BUNDLE}"
 rm -rf "$BUNDLE"
