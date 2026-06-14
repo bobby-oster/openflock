@@ -77,6 +77,36 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(other.usage.outputTokens, 7)
     }
 
+    func testParsesTranscriptSummaryFromData() throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-10T20:00:00.000Z"))
+        let url = URL(fileURLWithPath: "session-0001.jsonl")
+        let data = """
+        {"type":"user","sessionId":"session-0001","cwd":"/Users/dev/myproject","slug":"fix-the-bug","timestamp":"2026-06-10T20:00:00.000Z","message":{"role":"user"}}
+        \(assistantLine(session: "session-0001", slug: "fix-the-bug", input: 12, output: 8, cacheRead: 30, cacheCreation: 4, stopReason: "end_turn", timestamp: "2026-06-10T20:01:00.000Z"))
+        """.data(using: .utf8)!
+
+        let summary = try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
+            data: data,
+            from: url,
+            modifiedAt: modifiedAt,
+            options: .init(formatter: formatter)
+        ))
+
+        XCTAssertEqual(summary.sessionId, "session-0001")
+        XCTAssertFalse(summary.isSubagent)
+        XCTAssertEqual(summary.cwd, "/Users/dev/myproject")
+        XCTAssertEqual(summary.slug, "fix-the-bug")
+        XCTAssertEqual(summary.model, "claude-fable-5")
+        XCTAssertEqual(summary.usage.inputTokens, 12)
+        XCTAssertEqual(summary.usage.outputTokens, 8)
+        XCTAssertEqual(summary.usage.cacheReadTokens, 30)
+        XCTAssertEqual(summary.usage.cacheCreationTokens, 4)
+        XCTAssertEqual(summary.lastEvent, .turnEnded)
+        XCTAssertEqual(summary.lastActivity, formatter.date(from: "2026-06-10T20:01:00.000Z"))
+    }
+
     func testSessionIdsAreUnique() throws {
         try writeTranscript("proj/abc-123.jsonl", lines: assistantLine(session: "abc-123", output: 1))
         try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
