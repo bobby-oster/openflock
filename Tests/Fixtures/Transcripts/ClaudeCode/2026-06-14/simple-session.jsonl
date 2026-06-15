@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"session-0001","cwd":"/Users/dev/example","slug":"example-task","timestamp":"2026-06-14T12:00:00.000Z","message":{"content":"Start the example task."}}
+{"type":"assistant","sessionId":"session-0001","cwd":"/Users/dev/example","slug":"example-task","timestamp":"2026-06-14T12:00:05.000Z","message":{"model":"claude-fable-5","stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":23,"cache_creation_input_tokens":3}}}
