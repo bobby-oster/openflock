@@ -167,6 +167,7 @@ private struct TranscriptLine: Decodable {
 
         var tokenUsage: TokenUsage {
             var u = TokenUsage()
+            u.isKnown = true
             u.inputTokens = inputTokens ?? 0
             u.outputTokens = outputTokens ?? 0
             u.cacheReadTokens = cacheReadInputTokens ?? 0

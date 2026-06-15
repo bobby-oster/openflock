@@ -30,7 +30,7 @@ struct FlockPanel: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.vertical, 24)
                 } else {
-                    sessionList
+                    sessionList(showProducerBadges: model.hasMultipleProducers)
                 }
             }
             Divider()
@@ -88,11 +88,11 @@ struct FlockPanel: View {
         }
     }
 
-    private var sessionList: some View {
+    private func sessionList(showProducerBadges: Bool) -> some View {
         ScrollView {
             VStack(spacing: 6) {
                 ForEach(model.sessions) { session in
-                    SessionRow(session: session)
+                    SessionRow(session: session, showProducerBadge: showProducerBadges)
                 }
             }
         }
@@ -126,6 +126,7 @@ struct FlockPanel: View {
 
 struct SessionRow: View {
     let session: AgentSession
+    let showProducerBadge: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -133,20 +134,33 @@ struct SessionRow: View {
                 .fill(session.state.color)
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.projectName)
-                    .font(.callout)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(session.projectName)
+                        .font(.callout)
+                        .lineLimit(1)
+                    if showProducerBadge {
+                        Text(session.producer.badgeLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(.secondary.opacity(0.35), lineWidth: 1)
+                            )
+                    }
+                }
                 Text(subtitle)
                     .font(.caption2)
                     .lineLimit(1)
             }
-            .help(session.slug ?? session.id)
+            .help(session.slug ?? session.rawSessionId)
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
-                Text("\(Format.tokens(session.usage.outputTokens)) out")
+                Text(session.usage.isKnown ? "\(Format.tokens(session.usage.outputTokens)) out" : "— out")
                     .font(.callout)
                     .monospacedDigit()
-                (Text("Σ\(Format.tokens(session.usage.total)) · ")
+                (Text("\(session.usage.isKnown ? "Σ\(Format.tokens(session.usage.total))" : "Σ—") · ")
                     + Text(session.lastActivity, style: .relative))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -178,5 +192,14 @@ struct SessionRow: View {
         rest.foregroundColor = .secondary
         result += rest
         return result
+    }
+}
+
+private extension TranscriptProducer {
+    var badgeLabel: String {
+        switch self {
+        case .claudeCode: "Claude"
+        case .codex: "Codex"
+        }
     }
 }

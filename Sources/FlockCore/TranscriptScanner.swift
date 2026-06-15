@@ -16,6 +16,8 @@ public struct TranscriptScanner: Sendable {
     public init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects"),
+        codexSessionsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions"),
         recencyWindow: TimeInterval = 24 * 3600,
         eventWindow: TimeInterval = 15 * 60,
         sources: [any TranscriptSource]? = nil
@@ -26,6 +28,11 @@ public struct TranscriptScanner: Sendable {
         self.sources = sources ?? [
             ClaudeCodeTranscriptSource(
                 projectsDirectory: projectsDirectory,
+                recencyWindow: recencyWindow,
+                eventWindow: eventWindow
+            ),
+            CodexTranscriptSource(
+                sessionsDirectory: codexSessionsDirectory,
                 recencyWindow: recencyWindow,
                 eventWindow: eventWindow
             )
@@ -54,7 +61,8 @@ public struct TranscriptScanner: Sendable {
                 AgentSession.state(last: file.lastEvent, age: now.timeIntervalSince(file.lastActivity))
             }
             return AgentSession(
-                id: key.sessionId,
+                id: "\(key.producer.rawValue):\(key.sessionId)",
+                rawSessionId: key.sessionId,
                 producer: key.producer,
                 projectPath: primary.cwd ?? "?",
                 slug: primary.slug,
