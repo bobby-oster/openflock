@@ -29,6 +29,7 @@ final class FlockModel {
 
     var sessions: [AgentSession] { snapshot?.sessions ?? [] }
     var lastScan: Date? { snapshot?.scannedAt }
+    var hasMultipleProducers: Bool { Set(sessions.map(\.producer)).count > 1 }
 
     var workingCount: Int { sessions.filter { $0.state == .working }.count }
     var waitingCount: Int { sessions.filter { $0.state == .waiting }.count }

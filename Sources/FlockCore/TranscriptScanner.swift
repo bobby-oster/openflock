@@ -28,6 +28,10 @@ public struct TranscriptScanner: Sendable {
                 projectsDirectory: projectsDirectory,
                 recencyWindow: recencyWindow,
                 eventWindow: eventWindow
+            ),
+            CodexTranscriptSource(
+                recencyWindow: recencyWindow,
+                eventWindow: eventWindow
             )
         ]
     }
@@ -54,7 +58,8 @@ public struct TranscriptScanner: Sendable {
                 AgentSession.state(last: file.lastEvent, age: now.timeIntervalSince(file.lastActivity))
             }
             return AgentSession(
-                id: key.sessionId,
+                id: "\(key.producer.rawValue):\(key.sessionId)",
+                rawSessionId: key.sessionId,
                 producer: key.producer,
                 projectPath: primary.cwd ?? "?",
                 slug: primary.slug,

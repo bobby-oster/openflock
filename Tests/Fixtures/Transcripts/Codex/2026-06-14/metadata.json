@@ -1,1 +1,1 @@
-{"producer":"codex","modelsShapeOfVersion":"codex-cli 0.139.0 observed shape, synthetic fixture","authoredAt":"2026-06-14","fabricated":true,"cases":["basic-session"],"notes":"Hand-authored synthetic fixture modeling observed Codex JSONL envelope. No real data."}
+{"producer":"codex","modelsShapeOfVersion":"codex-cli 0.139.0 observed shape, synthetic fixture","authoredAt":"2026-06-14","fabricated":true,"cases":["basic-session","active-session"],"notes":"Hand-authored synthetic fixture modeling observed Codex JSONL envelope. No real data."}

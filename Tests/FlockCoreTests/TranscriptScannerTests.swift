@@ -26,8 +26,12 @@ import XCTest
 // - tool result clears pending or blocked state: testToolResultClearsPendingBlockedState
 // - completed turn becomes waiting: testStateFromLastTranscriptEvent
 //
-// Codex cases are deferred until Codex support exists: transcript location/id,
-// working directory, model, token usage, tool representation, and state inference.
+// Codex cases:
+// - completed Codex fixture: testParsesCompletedCodexFixture
+// - active Codex fixture: testParsesActiveCodexFixture
+// - missing token_count is shown as unknown usage: testCodexSessionWithoutTokenCountKeepsUsageUnknown
+// - source discovery: testCodexSourceDiscoversNestedSessionFiles
+// - parse failures isolated from Claude: testCodexParseFailureDoesNotBlockClaudeSessions
 // Incremental scanner cases are deferred until incremental scanning exists: appends,
 // partial lines, malformed appended lines, truncation, replacement, unchanged-file
 // reuse, event aging, and stale-session recency behavior.
@@ -49,6 +53,10 @@ final class TranscriptScannerTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try lines.data(using: .utf8)!.write(to: url)
+    }
+
+    private func claudeOnlyScanner() -> TranscriptScanner {
+        TranscriptScanner(sources: [ClaudeCodeTranscriptSource(projectsDirectory: projectsDir)])
     }
 
     private func iso(_ date: Date) -> String {
@@ -92,10 +100,11 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("other/def-456.jsonl",
             lines: assistantLine(session: "def-456", cwd: "/Users/dev/other", output: 7))
 
-        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions
+        let sessions = claudeOnlyScanner().scan(now: now).sessions
 
         XCTAssertEqual(sessions.count, 2)
-        let s = try XCTUnwrap(sessions.first { $0.id == "abc-123" })
+        let s = try XCTUnwrap(sessions.first { $0.rawSessionId == "abc-123" })
+        XCTAssertEqual(s.id, "claudeCode:abc-123")
         XCTAssertEqual(s.projectPath, "/Users/dev/myproject")
         XCTAssertEqual(s.producer, .claudeCode)
         XCTAssertEqual(s.slug, "fix-the-bug")
@@ -109,7 +118,7 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(s.state, .working)
         XCTAssertEqual(s.projectName, "myproject")
 
-        let other = try XCTUnwrap(sessions.first { $0.id == "def-456" })
+        let other = try XCTUnwrap(sessions.first { $0.rawSessionId == "def-456" })
         XCTAssertEqual(other.subagentCount, 0)
         XCTAssertEqual(other.usage.outputTokens, 7)
     }
@@ -190,6 +199,75 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(summary.lastEvent, .toolPending)
     }
 
+    func testParsesCompletedCodexFixture() throws {
+        let formatter = fixtureFormatter()
+        let data = try TranscriptFixtureLoader.data(producer: "Codex", caseName: "basic-session")
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:00:06.000Z"))
+
+        let summary = try XCTUnwrap(CodexTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "basic-session.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        XCTAssertEqual(summary.producer, .codex)
+        XCTAssertEqual(summary.sessionId, "session-0001")
+        XCTAssertFalse(summary.isSubagent)
+        XCTAssertEqual(summary.cwd, "/Users/dev/example")
+        XCTAssertEqual(summary.model, "generic-codex-model")
+        XCTAssertTrue(summary.usage.isKnown)
+        XCTAssertEqual(summary.usage.inputTokens, 20)
+        XCTAssertEqual(summary.usage.outputTokens, 15)
+        XCTAssertEqual(summary.usage.cacheReadTokens, 5)
+        XCTAssertEqual(summary.usage.total, 40)
+        XCTAssertEqual(summary.lastEvent, .turnEnded)
+        XCTAssertEqual(summary.lastActivity, formatter.date(from: "2026-06-14T12:00:06.000Z"))
+    }
+
+    func testParsesActiveCodexFixture() throws {
+        let formatter = fixtureFormatter()
+        let data = try TranscriptFixtureLoader.data(producer: "Codex", caseName: "active-session")
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:10:04.000Z"))
+
+        let summary = try XCTUnwrap(CodexTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "active-session.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        XCTAssertEqual(summary.producer, .codex)
+        XCTAssertEqual(summary.sessionId, "session-0002")
+        XCTAssertEqual(summary.cwd, "/Users/dev/example")
+        XCTAssertEqual(summary.model, "generic-codex-model")
+        XCTAssertTrue(summary.usage.isKnown)
+        XCTAssertEqual(summary.usage.inputTokens, 8)
+        XCTAssertEqual(summary.usage.outputTokens, 5)
+        XCTAssertEqual(summary.usage.cacheReadTokens, 2)
+        XCTAssertEqual(summary.usage.total, 15)
+        XCTAssertEqual(summary.lastEvent, .toolPending)
+        XCTAssertEqual(summary.lastActivity, formatter.date(from: "2026-06-14T12:10:04.000Z"))
+    }
+
+    func testCodexSessionWithoutTokenCountKeepsUsageUnknown() throws {
+        let formatter = fixtureFormatter()
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:20:02.000Z"))
+        let data = """
+        {"type":"session_meta","timestamp":"2026-06-14T12:20:00.000Z","payload":{"id":"session-0004","cwd":"/Users/dev/example"}}
+        {"type":"turn_context","timestamp":"2026-06-14T12:20:01.000Z","payload":{"turn_id":"turn-0004","cwd":"/Users/dev/example","model":"generic-codex-model"}}
+        {"type":"event_msg","timestamp":"2026-06-14T12:20:02.000Z","payload":{"type":"agent_message","message":"Synthetic response complete.","phase":"final"}}
+        """.data(using: .utf8)!
+
+        let summary = try XCTUnwrap(CodexTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "unknown-usage.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        XCTAssertFalse(summary.usage.isKnown)
+        XCTAssertEqual(summary.usage.total, 0)
+        XCTAssertEqual(summary.lastEvent, .turnEnded)
+    }
+
     func testPermissionPromptFixtureClassifiesAsBlocked() throws {
         let formatter = fixtureFormatter()
         let now = try XCTUnwrap(formatter.date(from: "2026-06-14T12:05:00.000Z"))
@@ -199,9 +277,10 @@ final class TranscriptScannerTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
 
         let session = try XCTUnwrap(
-            TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions.first)
+            claudeOnlyScanner().scan(now: now).sessions.first)
 
-        XCTAssertEqual(session.id, "session-0003")
+        XCTAssertEqual(session.id, "claudeCode:session-0003")
+        XCTAssertEqual(session.rawSessionId, "session-0003")
         XCTAssertEqual(session.producer, .claudeCode)
         XCTAssertEqual(session.projectPath, "/Users/dev/example")
         XCTAssertEqual(session.slug, "permission-example")
@@ -215,7 +294,7 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
             lines: assistantLine(session: "abc-123", output: 2))
 
-        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
+        let sessions = claudeOnlyScanner().scan().sessions
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(Set(sessions.map(\.id)).count, sessions.count)
     }
@@ -257,13 +336,78 @@ final class TranscriptScannerTests: XCTestCase {
         ]).scan(now: now)
 
         XCTAssertEqual(snapshot.sessions.count, 2)
-        XCTAssertEqual(snapshot.sessions.filter { $0.id == "shared-session" }.count, 2)
+        XCTAssertEqual(snapshot.sessions.filter { $0.rawSessionId == "shared-session" }.count, 2)
+        XCTAssertEqual(Set(snapshot.sessions.map(\.id)), ["claudeCode:shared-session", "codex:shared-session"])
         let claude = try XCTUnwrap(snapshot.sessions.first { $0.producer == .claudeCode })
         let codex = try XCTUnwrap(snapshot.sessions.first { $0.producer == .codex })
         XCTAssertEqual(claude.projectPath, "/Users/dev/claude")
         XCTAssertEqual(claude.usage.outputTokens, 3)
         XCTAssertEqual(codex.projectPath, "/Users/dev/codex")
         XCTAssertEqual(codex.usage.outputTokens, 5)
+    }
+
+    func testMixedProducerRawSessionIdDoesNotCollide() throws {
+        let now = Date()
+        try writeTranscript("proj/session-0001.jsonl", lines:
+            assistantLine(session: "session-0001", output: 3, timestamp: iso(now.addingTimeInterval(-1))))
+
+        let codexData = try TranscriptFixtureLoader.data(producer: "Codex", caseName: "basic-session")
+        let codexDir = projectsDir.appendingPathComponent("codex/2026/06/14")
+        try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
+        let codexURL = codexDir.appendingPathComponent("rollout-2026-06-14T12-00-00-session-0001.jsonl")
+        try codexData.write(to: codexURL)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: codexURL.path)
+
+        let snapshot = TranscriptScanner(sources: [
+            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir),
+            CodexTranscriptSource(sessionsDirectory: projectsDir.appendingPathComponent("codex")),
+        ]).scan(now: now)
+
+        XCTAssertEqual(snapshot.sessions.count, 2)
+        XCTAssertEqual(snapshot.sessions.filter { $0.rawSessionId == "session-0001" }.count, 2)
+        XCTAssertEqual(Set(snapshot.sessions.map(\.id)), ["claudeCode:session-0001", "codex:session-0001"])
+    }
+
+    func testCodexSourceDiscoversNestedSessionFiles() throws {
+        let formatter = fixtureFormatter()
+        let now = try XCTUnwrap(formatter.date(from: "2026-06-14T12:15:00.000Z"))
+        let codexRoot = projectsDir.appendingPathComponent("codex")
+        let sessionDir = codexRoot.appendingPathComponent("2026/06/14")
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let sessionURL = sessionDir.appendingPathComponent("rollout-2026-06-14T12-10-00-session-0002.jsonl")
+        try TranscriptFixtureLoader.data(producer: "Codex", caseName: "active-session").write(to: sessionURL)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: sessionURL.path)
+
+        let source = CodexTranscriptSource(sessionsDirectory: codexRoot)
+        let candidates = source.candidateFiles(now: now)
+        let summary = try XCTUnwrap(candidates.compactMap { source.parse($0, now: now) }.first)
+
+        XCTAssertEqual(candidates.map { $0.url.standardizedFileURL }, [sessionURL.standardizedFileURL])
+        XCTAssertEqual(summary.producer, .codex)
+        XCTAssertEqual(summary.sessionId, "session-0002")
+        XCTAssertEqual(summary.lastEvent, .toolPending)
+    }
+
+    func testCodexParseFailureDoesNotBlockClaudeSessions() throws {
+        let now = Date()
+        try writeTranscript("proj/session-0005.jsonl", lines:
+            assistantLine(session: "session-0005", output: 3, timestamp: iso(now.addingTimeInterval(-1))))
+
+        let codexRoot = projectsDir.appendingPathComponent("codex")
+        let sessionDir = codexRoot.appendingPathComponent("2026/06/14")
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let badURL = sessionDir.appendingPathComponent("rollout-bad.jsonl")
+        try Data("not json\n".utf8).write(to: badURL)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: badURL.path)
+
+        let snapshot = TranscriptScanner(sources: [
+            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir),
+            CodexTranscriptSource(sessionsDirectory: codexRoot),
+        ]).scan(now: now)
+
+        XCTAssertEqual(snapshot.sessions.count, 1)
+        XCTAssertEqual(snapshot.sessions.first?.producer, .claudeCode)
+        XCTAssertEqual(snapshot.sessions.first?.rawSessionId, "session-0005")
     }
 
     func testDefaultScannerMatchesExplicitClaudeOnlySource() throws {
@@ -276,7 +420,7 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
             lines: assistantLine(session: "abc-123", input: 10, output: 5, cacheRead: 100, stopReason: "tool_use", timestamp: recent))
 
-        let defaultSnapshot = TranscriptScanner(projectsDirectory: projectsDir).scan(now: now)
+        let defaultSnapshot = claudeOnlyScanner().scan(now: now)
         let explicitSnapshot = TranscriptScanner(sources: [
             ClaudeCodeTranscriptSource(projectsDirectory: projectsDir)
         ]).scan(now: now)
@@ -289,9 +433,10 @@ final class TranscriptScannerTests: XCTestCase {
         {"type":"assistant","cwd":"/Users/dev/myproject","timestamp":"2026-06-10T20:00:00.000Z","message":{"model":"claude-fable-5","stop_reason":"end_turn","usage":{"output_tokens":3}}}
         """)
 
-        let session = try XCTUnwrap(TranscriptScanner(projectsDirectory: projectsDir).scan().sessions.first)
+        let session = try XCTUnwrap(claudeOnlyScanner().scan().sessions.first)
 
-        XCTAssertEqual(session.id, "fallback-0001")
+        XCTAssertEqual(session.id, "claudeCode:fallback-0001")
+        XCTAssertEqual(session.rawSessionId, "fallback-0001")
         XCTAssertEqual(session.projectPath, "/Users/dev/myproject")
         XCTAssertEqual(session.model, "claude-fable-5")
         XCTAssertEqual(session.usage.outputTokens, 3)
@@ -327,9 +472,9 @@ final class TranscriptScannerTests: XCTestCase {
         """)
 
         let session = try XCTUnwrap(
-            TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions.first)
+            claudeOnlyScanner().scan(now: now).sessions.first)
 
-        XCTAssertEqual(session.id, "tool-result-0001")
+        XCTAssertEqual(session.rawSessionId, "tool-result-0001")
         XCTAssertEqual(session.state, .working)
     }
 
@@ -345,7 +490,7 @@ final class TranscriptScannerTests: XCTestCase {
         {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"\(recent)","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":120,"cache_read_input_tokens":479}}}
         """)
 
-        let snapshot = TranscriptScanner(projectsDirectory: projectsDir).scan(now: now)
+        let snapshot = claudeOnlyScanner().scan(now: now)
 
         // Only the recent turn lands in the event window.
         XCTAssertEqual(snapshot.recentEvents.count, 1)
@@ -376,7 +521,7 @@ final class TranscriptScannerTests: XCTestCase {
         {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"2026-06-10T20:00:00.000Z","message":{"model":"claude-fable-5","usage":{"output_tokens":5}}}
         {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"2026-06-10T20:01:00.000Z","message":{"model":"<synthetic>","usage":{"output_tokens":1}}}
         """)
-        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
+        let sessions = claudeOnlyScanner().scan().sessions
         XCTAssertEqual(sessions.first?.model, "claude-fable-5")
     }
 
@@ -390,8 +535,8 @@ final class TranscriptScannerTests: XCTestCase {
             [.modificationDate: Date().addingTimeInterval(-2 * 3600)], ofItemAtPath: url.path)
         try writeTranscript("proj/live-1.jsonl", lines: assistantLine(session: "live-1", output: 3))
 
-        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
-        XCTAssertEqual(sessions.map(\.id), ["live-1"])
+        let sessions = claudeOnlyScanner().scan().sessions
+        XCTAssertEqual(sessions.map(\.rawSessionId), ["live-1"])
     }
 
     func testStateInference() {
@@ -427,8 +572,8 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("p/block.jsonl",
             lines: assistantLine(session: "block", output: 1, stopReason: "tool_use", toolUse: true, timestamp: ago(300)))
 
-        let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions
-        func state(_ id: String) -> AgentState? { sessions.first { $0.id == id }?.state }
+        let sessions = claudeOnlyScanner().scan(now: now).sessions
+        func state(_ id: String) -> AgentState? { sessions.first { $0.rawSessionId == id }?.state }
         XCTAssertEqual(state("wait"), .waiting)
         XCTAssertEqual(state("work"), .working)
         XCTAssertEqual(state("run"), .working)
@@ -444,7 +589,7 @@ final class TranscriptScannerTests: XCTestCase {
         {"type":"ai-title","sessionId":"done","cwd":"/p","timestamp":"\(iso(now.addingTimeInterval(-5)))","title":"whatever"}
         """)
         let session = try XCTUnwrap(
-            TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions.first)
+            claudeOnlyScanner().scan(now: now).sessions.first)
         XCTAssertEqual(session.state, .stale)
     }
 
@@ -476,6 +621,7 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(lhs.sessions.count, rhs.sessions.count, file: file, line: line)
         for (left, right) in zip(lhs.sessions, rhs.sessions) {
             XCTAssertEqual(left.id, right.id, file: file, line: line)
+            XCTAssertEqual(left.rawSessionId, right.rawSessionId, file: file, line: line)
             XCTAssertEqual(left.producer, right.producer, file: file, line: line)
             XCTAssertEqual(left.projectPath, right.projectPath, file: file, line: line)
             XCTAssertEqual(left.slug, right.slug, file: file, line: line)

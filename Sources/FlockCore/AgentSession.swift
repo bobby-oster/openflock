@@ -22,6 +22,7 @@ public struct TokenUsage: Equatable, Sendable {
     public var outputTokens = 0
     public var cacheReadTokens = 0
     public var cacheCreationTokens = 0
+    public var isKnown = false
 
     public init() {}
 
@@ -37,14 +38,17 @@ public struct TokenUsage: Equatable, Sendable {
         outputTokens += other.outputTokens
         cacheReadTokens += other.cacheReadTokens
         cacheCreationTokens += other.cacheCreationTokens
+        isKnown = isKnown || other.isKnown
     }
 }
 
 /// One agent session: the top-level transcript plus any sub-agent transcripts
 /// that share its producer and session id.
 public struct AgentSession: Identifiable, Sendable {
-    /// Producer-specific session id (top-level transcript filename stem for Claude Code).
+    /// Composite identity used by SwiftUI: `producer.rawValue:rawSessionId`.
     public let id: String
+    /// Producer-specific session id for display.
+    public let rawSessionId: String
     /// Agent runner that produced this session.
     public let producer: TranscriptProducer
     /// Working directory the session runs in.
