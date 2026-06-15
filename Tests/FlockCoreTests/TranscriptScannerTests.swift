@@ -97,6 +97,7 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(sessions.count, 2)
         let s = try XCTUnwrap(sessions.first { $0.id == "abc-123" })
         XCTAssertEqual(s.projectPath, "/Users/dev/myproject")
+        XCTAssertEqual(s.producer, .claudeCode)
         XCTAssertEqual(s.slug, "fix-the-bug")
         XCTAssertEqual(s.model, "claude-fable-5")
         XCTAssertEqual(s.subagentCount, 2)
@@ -132,6 +133,7 @@ final class TranscriptScannerTests: XCTestCase {
         ))
 
         XCTAssertEqual(summary.sessionId, "session-0001")
+        XCTAssertEqual(summary.producer, .claudeCode)
         XCTAssertFalse(summary.isSubagent)
         XCTAssertEqual(summary.cwd, "/Users/dev/myproject")
         XCTAssertEqual(summary.slug, "fix-the-bug")
@@ -156,6 +158,7 @@ final class TranscriptScannerTests: XCTestCase {
         ))
 
         XCTAssertEqual(summary.sessionId, "session-0001")
+        XCTAssertEqual(summary.producer, .claudeCode)
         XCTAssertFalse(summary.isSubagent)
         XCTAssertEqual(summary.cwd, "/Users/dev/example")
         XCTAssertEqual(summary.slug, "example-task")
@@ -199,6 +202,7 @@ final class TranscriptScannerTests: XCTestCase {
             TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions.first)
 
         XCTAssertEqual(session.id, "session-0003")
+        XCTAssertEqual(session.producer, .claudeCode)
         XCTAssertEqual(session.projectPath, "/Users/dev/example")
         XCTAssertEqual(session.slug, "permission-example")
         XCTAssertEqual(session.model, "claude-fable-5")
@@ -214,6 +218,70 @@ final class TranscriptScannerTests: XCTestCase {
         let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(Set(sessions.map(\.id)).count, sessions.count)
+    }
+
+    func testProducerIsPartOfSessionIdentity() throws {
+        let now = Date()
+        let claudeSummary = TranscriptFileSummary(
+            producer: .claudeCode,
+            sessionId: "shared-session",
+            isSubagent: false,
+            lastActivity: now,
+            lastEvent: .turnEnded,
+            cwd: "/Users/dev/claude",
+            model: "claude-fable-5",
+            usage: {
+                var usage = TokenUsage()
+                usage.outputTokens = 3
+                return usage
+            }()
+        )
+        let codexSummary = TranscriptFileSummary(
+            producer: .codex,
+            sessionId: "shared-session",
+            isSubagent: false,
+            lastActivity: now.addingTimeInterval(-1),
+            lastEvent: .turnEnded,
+            cwd: "/Users/dev/codex",
+            model: "codex-generic",
+            usage: {
+                var usage = TokenUsage()
+                usage.outputTokens = 5
+                return usage
+            }()
+        )
+
+        let snapshot = TranscriptScanner(sources: [
+            StaticTranscriptSource(producer: .claudeCode, summaries: [claudeSummary]),
+            StaticTranscriptSource(producer: .codex, summaries: [codexSummary]),
+        ]).scan(now: now)
+
+        XCTAssertEqual(snapshot.sessions.count, 2)
+        XCTAssertEqual(snapshot.sessions.filter { $0.id == "shared-session" }.count, 2)
+        let claude = try XCTUnwrap(snapshot.sessions.first { $0.producer == .claudeCode })
+        let codex = try XCTUnwrap(snapshot.sessions.first { $0.producer == .codex })
+        XCTAssertEqual(claude.projectPath, "/Users/dev/claude")
+        XCTAssertEqual(claude.usage.outputTokens, 3)
+        XCTAssertEqual(codex.projectPath, "/Users/dev/codex")
+        XCTAssertEqual(codex.usage.outputTokens, 5)
+    }
+
+    func testDefaultScannerMatchesExplicitClaudeOnlySource() throws {
+        let now = Date()
+        let recent = iso(now.addingTimeInterval(-5))
+        try writeTranscript("proj/abc-123.jsonl", lines: """
+        {"type":"user","sessionId":"abc-123","cwd":"/Users/dev/myproject","slug":"fix-the-bug","timestamp":"\(recent)","message":{"role":"user"}}
+        \(assistantLine(session: "abc-123", slug: "fix-the-bug", input: 100, output: 50, cacheRead: 1000, cacheCreation: 25, stopReason: "end_turn", timestamp: recent))
+        """)
+        try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
+            lines: assistantLine(session: "abc-123", input: 10, output: 5, cacheRead: 100, stopReason: "tool_use", timestamp: recent))
+
+        let defaultSnapshot = TranscriptScanner(projectsDirectory: projectsDir).scan(now: now)
+        let explicitSnapshot = TranscriptScanner(sources: [
+            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir)
+        ]).scan(now: now)
+
+        assertSameSnapshot(defaultSnapshot, explicitSnapshot)
     }
 
     func testFallsBackToFilenameWhenSessionIdIsMissing() throws {
@@ -390,5 +458,49 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(Format.modelShortName("claude-fable-5[1m]"), "fable-5")
         XCTAssertEqual(Format.modelShortName("claude-opus-4-8"), "opus-4-8")
         XCTAssertEqual(Format.modelShortName("gpt-x"), "gpt-x")
+    }
+
+    private func assertSameSnapshot(
+        _ lhs: FlockSnapshot,
+        _ rhs: FlockSnapshot,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(lhs.scannedAt, rhs.scannedAt, file: file, line: line)
+        XCTAssertEqual(lhs.recentEvents.count, rhs.recentEvents.count, file: file, line: line)
+        for (left, right) in zip(lhs.recentEvents, rhs.recentEvents) {
+            XCTAssertEqual(left.timestamp, right.timestamp, file: file, line: line)
+            XCTAssertEqual(left.usage, right.usage, file: file, line: line)
+        }
+
+        XCTAssertEqual(lhs.sessions.count, rhs.sessions.count, file: file, line: line)
+        for (left, right) in zip(lhs.sessions, rhs.sessions) {
+            XCTAssertEqual(left.id, right.id, file: file, line: line)
+            XCTAssertEqual(left.producer, right.producer, file: file, line: line)
+            XCTAssertEqual(left.projectPath, right.projectPath, file: file, line: line)
+            XCTAssertEqual(left.slug, right.slug, file: file, line: line)
+            XCTAssertEqual(left.model, right.model, file: file, line: line)
+            XCTAssertEqual(left.usage, right.usage, file: file, line: line)
+            XCTAssertEqual(left.lastActivity, right.lastActivity, file: file, line: line)
+            XCTAssertEqual(left.state, right.state, file: file, line: line)
+            XCTAssertEqual(left.subagentCount, right.subagentCount, file: file, line: line)
+            XCTAssertEqual(left.activeSubagentCount, right.activeSubagentCount, file: file, line: line)
+        }
+    }
+}
+
+private struct StaticTranscriptSource: TranscriptSource {
+    let producer: TranscriptProducer
+    let summaries: [TranscriptFileSummary]
+
+    func candidateFiles(now: Date) -> [TranscriptCandidate] {
+        summaries.indices.map {
+            TranscriptCandidate(url: URL(fileURLWithPath: "/synthetic/\($0).jsonl"), modifiedAt: now)
+        }
+    }
+
+    func parse(_ candidate: TranscriptCandidate, now: Date) -> TranscriptFileSummary? {
+        guard let index = Int(candidate.url.deletingPathExtension().lastPathComponent) else { return nil }
+        return summaries[index]
     }
 }

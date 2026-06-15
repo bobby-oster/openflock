@@ -40,11 +40,13 @@ public struct TokenUsage: Equatable, Sendable {
     }
 }
 
-/// One Claude Code session: the top-level transcript plus any sub-agent
-/// transcripts (`<sessionId>/subagents/agent-*.jsonl`) that share its id.
+/// One agent session: the top-level transcript plus any sub-agent transcripts
+/// that share its producer and session id.
 public struct AgentSession: Identifiable, Sendable {
-    /// Claude Code session id (top-level transcript filename stem).
+    /// Producer-specific session id (top-level transcript filename stem for Claude Code).
     public let id: String
+    /// Agent runner that produced this session.
+    public let producer: TranscriptProducer
     /// Working directory the session runs in.
     public let projectPath: String
     /// Human-readable session slug, when the transcript provides one.

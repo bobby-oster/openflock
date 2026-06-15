@@ -1,9 +1,8 @@
 import Foundation
 
-/// Scans Claude Code transcripts (`~/.claude/projects/**/*.jsonl`) and
-/// aggregates one `AgentSession` per session, folding sub-agent transcripts
-/// (`<project>/<sessionId>/subagents/agent-*.jsonl`, which share the parent's
-/// `sessionId`) into their parent session.
+/// Scans transcript sources and aggregates one `AgentSession` per producer
+/// session, folding sub-agent transcripts that share `(producer, sessionId)`
+/// into their parent session.
 ///
 /// v0 re-reads matching files on every scan; incremental tailing comes later.
 public struct TranscriptScanner: Sendable {
@@ -12,47 +11,37 @@ public struct TranscriptScanner: Sendable {
     public var recencyWindow: TimeInterval
     /// How far back to collect per-turn token events for throughput math.
     public var eventWindow: TimeInterval
+    public var sources: [any TranscriptSource]
 
     public init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects"),
         recencyWindow: TimeInterval = 24 * 3600,
-        eventWindow: TimeInterval = 15 * 60
+        eventWindow: TimeInterval = 15 * 60,
+        sources: [any TranscriptSource]? = nil
     ) {
         self.projectsDirectory = projectsDirectory
         self.recencyWindow = recencyWindow
         self.eventWindow = eventWindow
+        self.sources = sources ?? [
+            ClaudeCodeTranscriptSource(
+                projectsDirectory: projectsDirectory,
+                recencyWindow: recencyWindow,
+                eventWindow: eventWindow
+            )
+        ]
     }
 
     public func scan(now: Date = Date()) -> FlockSnapshot {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: projectsDirectory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return FlockSnapshot(sessions: [], recentEvents: [], scannedAt: now) }
-
-        // Share the parser's single millisecond-UTC formatter — the lexicographic
-        // cutoff compare below depends on the same format the parser assumes.
-        let formatter = ClaudeCodeTranscriptParser.defaultFormatter
-        let eventCutoff = now.addingTimeInterval(-eventWindow)
-        let cutoffString = formatter.string(from: eventCutoff)
-
-        var options = ClaudeCodeTranscriptParser.Options()
-        let parser = ClaudeCodeTranscriptParser()
         var files: [TranscriptFileSummary] = []
-        for case let url as URL in enumerator where url.pathExtension == "jsonl" {
-            guard
-                let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-                    .contentModificationDate,
-                now.timeIntervalSince(modified) < recencyWindow
-            else { continue }
-            options.eventCutoffString = modified >= eventCutoff ? cutoffString : nil
-            guard let file = parser.parseFile(at: url, options: options) else { continue }
-            files.append(file)
+        for source in sources {
+            for candidate in source.candidateFiles(now: now) {
+                guard let file = source.parse(candidate, now: now) else { continue }
+                files.append(file)
+            }
         }
 
-        let sessions = Dictionary(grouping: files, by: \.sessionId).compactMap { id, members -> AgentSession? in
+        let sessions = Dictionary(grouping: files, by: SessionKey.init).compactMap { key, members -> AgentSession? in
             guard let newest = members.max(by: { $0.lastActivity < $1.lastActivity }) else { return nil }
             let main = members.first { !$0.isSubagent }
             let subagents = members.filter(\.isSubagent)
@@ -65,7 +54,8 @@ public struct TranscriptScanner: Sendable {
                 AgentSession.state(last: file.lastEvent, age: now.timeIntervalSince(file.lastActivity))
             }
             return AgentSession(
-                id: id,
+                id: key.sessionId,
+                producer: key.producer,
                 projectPath: primary.cwd ?? "?",
                 slug: primary.slug,
                 model: primary.model ?? newest.model,
@@ -86,5 +76,15 @@ public struct TranscriptScanner: Sendable {
             recentEvents: files.flatMap(\.events),
             scannedAt: now
         )
+    }
+}
+
+private struct SessionKey: Hashable {
+    let producer: TranscriptProducer
+    let sessionId: String
+
+    init(_ file: TranscriptFileSummary) {
+        self.producer = file.producer
+        self.sessionId = file.sessionId
     }
 }
