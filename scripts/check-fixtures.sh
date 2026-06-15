@@ -39,6 +39,7 @@ allowed = {
     "cwd",
     "slug",
     "timestamp",
+    "payload",
     "message",
     "producer",
     "modelsShapeOfVersion",
