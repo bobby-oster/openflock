@@ -37,27 +37,52 @@ import XCTest
 // partial lines, malformed appended lines, truncation, replacement, unchanged-file
 // reuse, event aging, and stale-session recency behavior.
 final class TranscriptScannerTests: XCTestCase {
-    var projectsDir: URL!
+    // Each producer scans its own temp dir, mirroring the real layout
+    // (~/.claude/projects, ~/.codex/sessions). Co-equal: tests treat both the same,
+    // and neither source ever touches the real machine.
+    var testRoot: URL!
+    var projectsDir: URL!   // Claude transcripts root
+    var codexDir: URL!      // Codex sessions root
 
     override func setUpWithError() throws {
-        projectsDir = FileManager.default.temporaryDirectory
+        testRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("openflock-test-\(UUID().uuidString)")
+        projectsDir = testRoot.appendingPathComponent("claude")
+        codexDir = testRoot.appendingPathComponent("codex")
         try FileManager.default.createDirectory(at: projectsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
     }
 
     override func tearDownWithError() throws {
-        try FileManager.default.removeItem(at: projectsDir)
+        try FileManager.default.removeItem(at: testRoot)
     }
 
+    // Symmetric per-producer fixture writers — same shape, one per producer.
     private func writeTranscript(_ relativePath: String, lines: String) throws {
-        let url = projectsDir.appendingPathComponent(relativePath)
+        try writeFixture(at: projectsDir.appendingPathComponent(relativePath),
+                         data: lines.data(using: .utf8)!)
+    }
+
+    private func writeCodexTranscript(_ relativePath: String, data: Data, modifiedAt: Date? = nil) throws {
+        try writeFixture(at: codexDir.appendingPathComponent(relativePath), data: data, modifiedAt: modifiedAt)
+    }
+
+    private func writeFixture(at url: URL, data: Data, modifiedAt: Date? = nil) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try lines.data(using: .utf8)!.write(to: url)
+        try data.write(to: url)
+        if let modifiedAt {
+            try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: url.path)
+        }
     }
 
-    private func claudeOnlyScanner() -> TranscriptScanner {
-        TranscriptScanner(sources: [ClaudeCodeTranscriptSource(projectsDirectory: projectsDir)])
+    // Hermetic scanner over BOTH producers' temp dirs — never the real machine.
+    // A producer with no fixtures written just contributes an empty source.
+    private func hermeticScanner() -> TranscriptScanner {
+        TranscriptScanner(sources: [
+            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir),
+            CodexTranscriptSource(sessionsDirectory: codexDir),
+        ])
     }
 
     private func iso(_ date: Date) -> String {
@@ -101,7 +126,7 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("other/def-456.jsonl",
             lines: assistantLine(session: "def-456", cwd: "/Users/dev/other", output: 7))
 
-        let sessions = claudeOnlyScanner().scan(now: now).sessions
+        let sessions = hermeticScanner().scan(now: now).sessions
 
         XCTAssertEqual(sessions.count, 2)
         let s = try XCTUnwrap(sessions.first { $0.rawSessionId == "abc-123" })
@@ -305,7 +330,7 @@ final class TranscriptScannerTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
 
         let session = try XCTUnwrap(
-            claudeOnlyScanner().scan(now: now).sessions.first)
+            hermeticScanner().scan(now: now).sessions.first)
 
         XCTAssertEqual(session.id, "claudeCode:session-0003")
         XCTAssertEqual(session.rawSessionId, "session-0003")
@@ -322,7 +347,7 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
             lines: assistantLine(session: "abc-123", output: 2))
 
-        let sessions = claudeOnlyScanner().scan().sessions
+        let sessions = hermeticScanner().scan().sessions
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(Set(sessions.map(\.id)).count, sessions.count)
     }
@@ -379,17 +404,12 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("proj/session-0001.jsonl", lines:
             assistantLine(session: "session-0001", output: 3, timestamp: iso(now.addingTimeInterval(-1))))
 
+        // Same raw session id under a different producer must NOT collide.
         let codexData = try TranscriptFixtureLoader.data(producer: "Codex", caseName: "basic-session")
-        let codexDir = projectsDir.appendingPathComponent("codex/2026/06/14")
-        try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
-        let codexURL = codexDir.appendingPathComponent("rollout-2026-06-14T12-00-00-session-0001.jsonl")
-        try codexData.write(to: codexURL)
-        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: codexURL.path)
+        try writeCodexTranscript(
+            "2026/06/14/rollout-2026-06-14T12-00-00-session-0001.jsonl", data: codexData, modifiedAt: now)
 
-        let snapshot = TranscriptScanner(sources: [
-            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir),
-            CodexTranscriptSource(sessionsDirectory: projectsDir.appendingPathComponent("codex")),
-        ]).scan(now: now)
+        let snapshot = hermeticScanner().scan(now: now)
 
         XCTAssertEqual(snapshot.sessions.count, 2)
         XCTAssertEqual(snapshot.sessions.filter { $0.rawSessionId == "session-0001" }.count, 2)
@@ -399,18 +419,16 @@ final class TranscriptScannerTests: XCTestCase {
     func testCodexSourceDiscoversNestedSessionFiles() throws {
         let formatter = fixtureFormatter()
         let now = try XCTUnwrap(formatter.date(from: "2026-06-14T12:15:00.000Z"))
-        let codexRoot = projectsDir.appendingPathComponent("codex")
-        let sessionDir = codexRoot.appendingPathComponent("2026/06/14")
-        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
-        let sessionURL = sessionDir.appendingPathComponent("rollout-2026-06-14T12-10-00-session-0002.jsonl")
-        try TranscriptFixtureLoader.data(producer: "Codex", caseName: "active-session").write(to: sessionURL)
-        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: sessionURL.path)
+        let relPath = "2026/06/14/rollout-2026-06-14T12-10-00-session-0002.jsonl"
+        let data = try TranscriptFixtureLoader.data(producer: "Codex", caseName: "active-session")
+        try writeCodexTranscript(relPath, data: data, modifiedAt: now)
 
-        let source = CodexTranscriptSource(sessionsDirectory: codexRoot)
+        let source = CodexTranscriptSource(sessionsDirectory: codexDir)
         let candidates = source.candidateFiles(now: now)
         let summary = try XCTUnwrap(candidates.compactMap { source.parse($0, now: now) }.first)
 
-        XCTAssertEqual(candidates.map { $0.url.standardizedFileURL }, [sessionURL.standardizedFileURL])
+        XCTAssertEqual(candidates.map { $0.url.standardizedFileURL },
+                       [codexDir.appendingPathComponent(relPath).standardizedFileURL])
         XCTAssertEqual(summary.producer, .codex)
         XCTAssertEqual(summary.sessionId, "session-0002")
         XCTAssertEqual(summary.lastEvent, .toolPending)
@@ -421,17 +439,10 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("proj/session-0005.jsonl", lines:
             assistantLine(session: "session-0005", output: 3, timestamp: iso(now.addingTimeInterval(-1))))
 
-        let codexRoot = projectsDir.appendingPathComponent("codex")
-        let sessionDir = codexRoot.appendingPathComponent("2026/06/14")
-        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
-        let badURL = sessionDir.appendingPathComponent("rollout-bad.jsonl")
-        try Data("not json\n".utf8).write(to: badURL)
-        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: badURL.path)
+        // A malformed Codex file must not stop Claude sessions from loading.
+        try writeCodexTranscript("2026/06/14/rollout-bad.jsonl", data: Data("not json\n".utf8), modifiedAt: now)
 
-        let snapshot = TranscriptScanner(sources: [
-            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir),
-            CodexTranscriptSource(sessionsDirectory: codexRoot),
-        ]).scan(now: now)
+        let snapshot = hermeticScanner().scan(now: now)
 
         XCTAssertEqual(snapshot.sessions.count, 1)
         XCTAssertEqual(snapshot.sessions.first?.producer, .claudeCode)
@@ -448,19 +459,13 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
             lines: assistantLine(session: "abc-123", input: 10, output: 5, cacheRead: 100, stopReason: "tool_use", timestamp: recent))
 
-        // Drive the real convenience init (Claude + Codex defaults), but point Codex
-        // at an empty temp dir so the default wiring is exercised hermetically —
-        // never the real ~/.codex.
-        let emptyCodexDir = projectsDir.appendingPathComponent("empty-codex")
-        try FileManager.default.createDirectory(at: emptyCodexDir, withIntermediateDirectories: true)
+        // The real convenience init (Claude + Codex defaults) must match explicit
+        // sources. codexDir is empty here, so it's exercised hermetically — never ~/.codex.
         let defaultSnapshot = TranscriptScanner(
             projectsDirectory: projectsDir,
-            codexSessionsDirectory: emptyCodexDir
+            codexSessionsDirectory: codexDir
         ).scan(now: now)
-        let explicitSnapshot = TranscriptScanner(sources: [
-            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir),
-            CodexTranscriptSource(sessionsDirectory: emptyCodexDir),
-        ]).scan(now: now)
+        let explicitSnapshot = hermeticScanner().scan(now: now)
 
         assertSameSnapshot(defaultSnapshot, explicitSnapshot)
     }
@@ -470,7 +475,7 @@ final class TranscriptScannerTests: XCTestCase {
         {"type":"assistant","cwd":"/Users/dev/myproject","timestamp":"2026-06-10T20:00:00.000Z","message":{"model":"claude-fable-5","stop_reason":"end_turn","usage":{"output_tokens":3}}}
         """)
 
-        let session = try XCTUnwrap(claudeOnlyScanner().scan().sessions.first)
+        let session = try XCTUnwrap(hermeticScanner().scan().sessions.first)
 
         XCTAssertEqual(session.id, "claudeCode:fallback-0001")
         XCTAssertEqual(session.rawSessionId, "fallback-0001")
@@ -509,7 +514,7 @@ final class TranscriptScannerTests: XCTestCase {
         """)
 
         let session = try XCTUnwrap(
-            claudeOnlyScanner().scan(now: now).sessions.first)
+            hermeticScanner().scan(now: now).sessions.first)
 
         XCTAssertEqual(session.rawSessionId, "tool-result-0001")
         XCTAssertEqual(session.state, .working)
@@ -527,7 +532,7 @@ final class TranscriptScannerTests: XCTestCase {
         {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"\(recent)","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":120,"cache_read_input_tokens":479}}}
         """)
 
-        let snapshot = claudeOnlyScanner().scan(now: now)
+        let snapshot = hermeticScanner().scan(now: now)
 
         // Only the recent turn lands in the event window.
         XCTAssertEqual(snapshot.recentEvents.count, 1)
@@ -558,7 +563,7 @@ final class TranscriptScannerTests: XCTestCase {
         {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"2026-06-10T20:00:00.000Z","message":{"model":"claude-fable-5","usage":{"output_tokens":5}}}
         {"type":"assistant","sessionId":"abc-123","cwd":"/p","timestamp":"2026-06-10T20:01:00.000Z","message":{"model":"<synthetic>","usage":{"output_tokens":1}}}
         """)
-        let sessions = claudeOnlyScanner().scan().sessions
+        let sessions = hermeticScanner().scan().sessions
         XCTAssertEqual(sessions.first?.model, "claude-fable-5")
     }
 
@@ -572,7 +577,7 @@ final class TranscriptScannerTests: XCTestCase {
             [.modificationDate: Date().addingTimeInterval(-2 * 3600)], ofItemAtPath: url.path)
         try writeTranscript("proj/live-1.jsonl", lines: assistantLine(session: "live-1", output: 3))
 
-        let sessions = claudeOnlyScanner().scan().sessions
+        let sessions = hermeticScanner().scan().sessions
         XCTAssertEqual(sessions.map(\.rawSessionId), ["live-1"])
     }
 
@@ -609,7 +614,7 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("p/block.jsonl",
             lines: assistantLine(session: "block", output: 1, stopReason: "tool_use", toolUse: true, timestamp: ago(300)))
 
-        let sessions = claudeOnlyScanner().scan(now: now).sessions
+        let sessions = hermeticScanner().scan(now: now).sessions
         func state(_ id: String) -> AgentState? { sessions.first { $0.rawSessionId == id }?.state }
         XCTAssertEqual(state("wait"), .waiting)
         XCTAssertEqual(state("work"), .working)
@@ -626,7 +631,7 @@ final class TranscriptScannerTests: XCTestCase {
         {"type":"ai-title","sessionId":"done","cwd":"/p","timestamp":"\(iso(now.addingTimeInterval(-5)))","title":"whatever"}
         """)
         let session = try XCTUnwrap(
-            claudeOnlyScanner().scan(now: now).sessions.first)
+            hermeticScanner().scan(now: now).sessions.first)
         XCTAssertEqual(session.state, .stale)
     }
 
