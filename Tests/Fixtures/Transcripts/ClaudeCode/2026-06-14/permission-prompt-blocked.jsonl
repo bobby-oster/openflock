@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"session-0003","cwd":"/Users/dev/example","slug":"permission-example","timestamp":"2026-06-14T12:02:00.000Z","message":{"content":"Run a command that needs approval."}}
+{"type":"assistant","sessionId":"session-0003","cwd":"/Users/dev/example","slug":"permission-example","timestamp":"2026-06-14T12:02:30.000Z","message":{"model":"claude-fable-5","content":[{"type":"tool_use"}],"stop_reason":"tool_use","usage":{"input_tokens":17,"output_tokens":4,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}

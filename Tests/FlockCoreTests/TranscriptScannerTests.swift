@@ -1,6 +1,36 @@
 import XCTest
 @testable import FlockCore
 
+// Parser and scanner coverage matrix:
+//
+// Core cases:
+// - simple assistant turn: testParsesSimpleSessionFixture
+// - session id fallback from filename: testFallsBackToFilenameWhenSessionIdIsMissing
+// - model detection: testParsesSimpleSessionFixture
+// - synthetic model ignored: testIgnoresSyntheticModelName
+// - token-usage aggregation: testGroupsSubagentsUnderParentSession
+// - cache-read and cache-creation tokens: testCollectsRecentTokenEventsForThroughput,
+//   testParsesSimpleSessionFixture
+// - recent token-event collection: testCollectsRecentTokenEventsForThroughput
+// - stale zero-token session filtered: testHidesStaleZeroTokenSessions
+// - housekeeping lines ignored as activity: testHousekeepingWritesDoNotCountAsActivity
+// - malformed JSON line skipped: testGroupsSubagentsUnderParentSession
+// - missing optional fields tolerated: testToleratesMissingOptionalTranscriptFields
+//
+// Claude Code cases:
+// - top-level session transcript: testParsesSimpleSessionFixture
+// - subagent transcript grouped into parent session: testGroupsSubagentsUnderParentSession
+// - active subagent keeps parent session working: testGroupsSubagentsUnderParentSession
+// - permission prompt / pending tool call becomes blocked past threshold:
+//   testPermissionPromptFixtureClassifiesAsBlocked
+// - tool result clears pending or blocked state: testToolResultClearsPendingBlockedState
+// - completed turn becomes waiting: testStateFromLastTranscriptEvent
+//
+// Codex cases are deferred until Codex support exists: transcript location/id,
+// working directory, model, token usage, tool representation, and state inference.
+// Incremental scanner cases are deferred until incremental scanning exists: appends,
+// partial lines, malformed appended lines, truncation, replacement, unchanged-file
+// reuse, event aging, and stale-session recency behavior.
 final class TranscriptScannerTests: XCTestCase {
     var projectsDir: URL!
 
@@ -25,6 +55,12 @@ final class TranscriptScannerTests: XCTestCase {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f.string(from: date)
+    }
+
+    private func fixtureFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
     }
 
     private func assistantLine(
@@ -78,8 +114,7 @@ final class TranscriptScannerTests: XCTestCase {
     }
 
     func testParsesTranscriptSummaryFromData() throws {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let formatter = fixtureFormatter()
         let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-10T20:00:00.000Z"))
         let url = URL(fileURLWithPath: "session-0001.jsonl")
         let data = """
@@ -109,6 +144,68 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(summary.lastActivity, formatter.date(from: "2026-06-10T20:01:00.000Z"))
     }
 
+    func testParsesSimpleSessionFixture() throws {
+        let formatter = fixtureFormatter()
+        let data = try TranscriptFixtureLoader.data(caseName: "simple-session")
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:00:10.000Z"))
+
+        let summary = try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "simple-session.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        XCTAssertEqual(summary.sessionId, "session-0001")
+        XCTAssertFalse(summary.isSubagent)
+        XCTAssertEqual(summary.cwd, "/Users/dev/example")
+        XCTAssertEqual(summary.slug, "example-task")
+        XCTAssertEqual(summary.model, "claude-fable-5")
+        XCTAssertEqual(summary.usage.inputTokens, 11)
+        XCTAssertEqual(summary.usage.outputTokens, 7)
+        XCTAssertEqual(summary.usage.cacheReadTokens, 23)
+        XCTAssertEqual(summary.usage.cacheCreationTokens, 3)
+        XCTAssertEqual(summary.lastEvent, .turnEnded)
+    }
+
+    func testParsesSubagentFixture() throws {
+        let formatter = fixtureFormatter()
+        let data = try TranscriptFixtureLoader.data(caseName: "subagents")
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:01:05.000Z"))
+
+        let summary = try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "session-0002/subagents/agent-0001.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        XCTAssertEqual(summary.sessionId, "session-0002")
+        XCTAssertTrue(summary.isSubagent)
+        XCTAssertEqual(summary.cwd, "/Users/dev/example")
+        XCTAssertEqual(summary.slug, "delegate-example")
+        XCTAssertEqual(summary.model, "claude-fable-5")
+        XCTAssertEqual(summary.usage.total, 20)
+        XCTAssertEqual(summary.lastEvent, .toolPending)
+    }
+
+    func testPermissionPromptFixtureClassifiesAsBlocked() throws {
+        let formatter = fixtureFormatter()
+        let now = try XCTUnwrap(formatter.date(from: "2026-06-14T12:05:00.000Z"))
+        let fixture = try TranscriptFixtureLoader.text(caseName: "permission-prompt-blocked")
+        try writeTranscript("proj/session-0003.jsonl", lines: fixture)
+        let url = projectsDir.appendingPathComponent("proj/session-0003.jsonl")
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
+
+        let session = try XCTUnwrap(
+            TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions.first)
+
+        XCTAssertEqual(session.id, "session-0003")
+        XCTAssertEqual(session.projectPath, "/Users/dev/example")
+        XCTAssertEqual(session.slug, "permission-example")
+        XCTAssertEqual(session.model, "claude-fable-5")
+        XCTAssertEqual(session.usage.total, 21)
+        XCTAssertEqual(session.state, .blocked)
+    }
+
     func testSessionIdsAreUnique() throws {
         try writeTranscript("proj/abc-123.jsonl", lines: assistantLine(session: "abc-123", output: 1))
         try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
@@ -117,6 +214,55 @@ final class TranscriptScannerTests: XCTestCase {
         let sessions = TranscriptScanner(projectsDirectory: projectsDir).scan().sessions
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(Set(sessions.map(\.id)).count, sessions.count)
+    }
+
+    func testFallsBackToFilenameWhenSessionIdIsMissing() throws {
+        try writeTranscript("proj/fallback-0001.jsonl", lines: """
+        {"type":"assistant","cwd":"/Users/dev/myproject","timestamp":"2026-06-10T20:00:00.000Z","message":{"model":"claude-fable-5","stop_reason":"end_turn","usage":{"output_tokens":3}}}
+        """)
+
+        let session = try XCTUnwrap(TranscriptScanner(projectsDirectory: projectsDir).scan().sessions.first)
+
+        XCTAssertEqual(session.id, "fallback-0001")
+        XCTAssertEqual(session.projectPath, "/Users/dev/myproject")
+        XCTAssertEqual(session.model, "claude-fable-5")
+        XCTAssertEqual(session.usage.outputTokens, 3)
+    }
+
+    func testToleratesMissingOptionalTranscriptFields() throws {
+        let formatter = fixtureFormatter()
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-10T20:00:00.000Z"))
+        let data = """
+        {"type":"assistant","timestamp":"2026-06-10T20:00:00.000Z","message":{"usage":{"output_tokens":2}}}
+        """.data(using: .utf8)!
+
+        let summary = try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "missing-fields-0001.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        XCTAssertEqual(summary.sessionId, "missing-fields-0001")
+        XCTAssertNil(summary.cwd)
+        XCTAssertNil(summary.slug)
+        XCTAssertNil(summary.model)
+        XCTAssertEqual(summary.usage.outputTokens, 2)
+        XCTAssertEqual(summary.lastEvent, .streaming)
+    }
+
+    func testToolResultClearsPendingBlockedState() throws {
+        let now = Date()
+        func ago(_ seconds: TimeInterval) -> String { iso(now.addingTimeInterval(-seconds)) }
+        try writeTranscript("proj/tool-result-0001.jsonl", lines: """
+        \(assistantLine(session: "tool-result-0001", output: 1, stopReason: "tool_use", toolUse: true, timestamp: ago(300)))
+        {"type":"user","sessionId":"tool-result-0001","cwd":"/Users/dev/myproject","timestamp":"\(ago(10))","message":{"content":[{"type":"tool_result"}]}}
+        """)
+
+        let session = try XCTUnwrap(
+            TranscriptScanner(projectsDirectory: projectsDir).scan(now: now).sessions.first)
+
+        XCTAssertEqual(session.id, "tool-result-0001")
+        XCTAssertEqual(session.state, .working)
     }
 
     func testCollectsRecentTokenEventsForThroughput() throws {
