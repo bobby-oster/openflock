@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>OpenFlock</string>
+	<string>{{DISPLAY_NAME}}</string>
 	<key>CFBundleDisplayName</key>
-	<string>OpenFlock</string>
+	<string>{{DISPLAY_NAME}}</string>
 	<key>CFBundleExecutable</key>
 	<string>OpenFlock</string>
 	<key>CFBundleIdentifier</key>
-	<string>ai.openflock.OpenFlock</string>
+	<string>{{BUNDLE_ID}}</string>
 	<key>CFBundleShortVersionString</key>
 	<string>{{VERSION}}</string>
 	<key>CFBundleVersion</key>
