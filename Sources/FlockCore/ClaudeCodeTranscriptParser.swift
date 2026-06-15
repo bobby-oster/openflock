@@ -2,13 +2,25 @@ import Foundation
 
 /// Parses one Claude Code JSONL transcript into a file-level summary.
 public struct ClaudeCodeTranscriptParser {
+    /// Claude Code timestamps are uniformly millisecond-precision UTC
+    /// (`YYYY-MM-DDTHH:MM:SS.mmmZ`). A formatter without `.withFractionalSeconds`
+    /// fails to parse every one of them, so `lastActivity` would fall back to the
+    /// file mtime and token events would never be collected. `TranscriptScanner`
+    /// also relies on this exact format for its lexicographic event-cutoff compare.
+    /// This is the single source of truth for that format; keep callers on it.
+    public static let defaultFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
     public struct Options {
         public var eventCutoffString: String?
         public var formatter: ISO8601DateFormatter
 
         public init(
             eventCutoffString: String? = nil,
-            formatter: ISO8601DateFormatter = ISO8601DateFormatter()
+            formatter: ISO8601DateFormatter = ClaudeCodeTranscriptParser.defaultFormatter
         ) {
             self.eventCutoffString = eventCutoffString
             self.formatter = formatter

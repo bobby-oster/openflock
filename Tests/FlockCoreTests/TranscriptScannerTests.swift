@@ -87,11 +87,13 @@ final class TranscriptScannerTests: XCTestCase {
         \(assistantLine(session: "session-0001", slug: "fix-the-bug", input: 12, output: 8, cacheRead: 30, cacheCreation: 4, stopReason: "end_turn", timestamp: "2026-06-10T20:01:00.000Z"))
         """.data(using: .utf8)!
 
+        // Parse through the DEFAULT Options: this exercises the parser's built-in
+        // formatter. If that default can't read millisecond timestamps, the
+        // lastActivity assertion below fails (it falls back to modifiedAt).
         let summary = try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
             data: data,
             from: url,
-            modifiedAt: modifiedAt,
-            options: .init(formatter: formatter)
+            modifiedAt: modifiedAt
         ))
 
         XCTAssertEqual(summary.sessionId, "session-0001")

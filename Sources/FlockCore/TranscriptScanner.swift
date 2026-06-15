@@ -32,12 +32,13 @@ public struct TranscriptScanner: Sendable {
             options: [.skipsHiddenFiles]
         ) else { return FlockSnapshot(sessions: [], recentEvents: [], scannedAt: now) }
 
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        // Share the parser's single millisecond-UTC formatter — the lexicographic
+        // cutoff compare below depends on the same format the parser assumes.
+        let formatter = ClaudeCodeTranscriptParser.defaultFormatter
         let eventCutoff = now.addingTimeInterval(-eventWindow)
         let cutoffString = formatter.string(from: eventCutoff)
 
-        var options = ClaudeCodeTranscriptParser.Options(eventCutoffString: nil, formatter: formatter)
+        var options = ClaudeCodeTranscriptParser.Options()
         let parser = ClaudeCodeTranscriptParser()
         var files: [TranscriptFileSummary] = []
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
