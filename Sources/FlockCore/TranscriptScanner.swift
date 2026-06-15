@@ -16,6 +16,8 @@ public struct TranscriptScanner: Sendable {
     public init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects"),
+        codexSessionsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions"),
         recencyWindow: TimeInterval = 24 * 3600,
         eventWindow: TimeInterval = 15 * 60,
         sources: [any TranscriptSource]? = nil
@@ -30,6 +32,7 @@ public struct TranscriptScanner: Sendable {
                 eventWindow: eventWindow
             ),
             CodexTranscriptSource(
+                sessionsDirectory: codexSessionsDirectory,
                 recencyWindow: recencyWindow,
                 eventWindow: eventWindow
             )

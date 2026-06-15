@@ -32,6 +32,7 @@ import XCTest
 // - missing token_count is shown as unknown usage: testCodexSessionWithoutTokenCountKeepsUsageUnknown
 // - source discovery: testCodexSourceDiscoversNestedSessionFiles
 // - parse failures isolated from Claude: testCodexParseFailureDoesNotBlockClaudeSessions
+// - nested token subsets normalized without double-counting: testCodexTokenUsageNormalizesNestedSubsets
 // Incremental scanner cases are deferred until incremental scanning exists: appends,
 // partial lines, malformed appended lines, truncation, replacement, unchanged-file
 // reuse, event aging, and stale-session recency behavior.
@@ -216,10 +217,10 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(summary.cwd, "/Users/dev/example")
         XCTAssertEqual(summary.model, "generic-codex-model")
         XCTAssertTrue(summary.usage.isKnown)
-        XCTAssertEqual(summary.usage.inputTokens, 20)
-        XCTAssertEqual(summary.usage.outputTokens, 15)
+        XCTAssertEqual(summary.usage.inputTokens, 15)   // 20 input − 5 cached (fresh, like Claude)
+        XCTAssertEqual(summary.usage.outputTokens, 11)  // reasoning already included in output
         XCTAssertEqual(summary.usage.cacheReadTokens, 5)
-        XCTAssertEqual(summary.usage.total, 40)
+        XCTAssertEqual(summary.usage.total, 31)         // == input_tokens (20) + output_tokens (11)
         XCTAssertEqual(summary.lastEvent, .turnEnded)
         XCTAssertEqual(summary.lastActivity, formatter.date(from: "2026-06-14T12:00:06.000Z"))
     }
@@ -240,10 +241,10 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(summary.cwd, "/Users/dev/example")
         XCTAssertEqual(summary.model, "generic-codex-model")
         XCTAssertTrue(summary.usage.isKnown)
-        XCTAssertEqual(summary.usage.inputTokens, 8)
-        XCTAssertEqual(summary.usage.outputTokens, 5)
+        XCTAssertEqual(summary.usage.inputTokens, 6)   // 8 input − 2 cached
+        XCTAssertEqual(summary.usage.outputTokens, 4)  // reasoning already included in output
         XCTAssertEqual(summary.usage.cacheReadTokens, 2)
-        XCTAssertEqual(summary.usage.total, 15)
+        XCTAssertEqual(summary.usage.total, 12)        // == input_tokens (8) + output_tokens (4)
         XCTAssertEqual(summary.lastEvent, .toolPending)
         XCTAssertEqual(summary.lastActivity, formatter.date(from: "2026-06-14T12:10:04.000Z"))
     }
@@ -266,6 +267,33 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertFalse(summary.usage.isKnown)
         XCTAssertEqual(summary.usage.total, 0)
         XCTAssertEqual(summary.lastEvent, .turnEnded)
+    }
+
+    func testCodexTokenUsageNormalizesNestedSubsets() throws {
+        // Codex reports nested subsets: total_tokens == input_tokens + output_tokens,
+        // with cached ⊆ input and reasoning ⊆ output. We must not double-count either.
+        let formatter = fixtureFormatter()
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:30:01.000Z"))
+        let input = 1000, cached = 700, output = 120, reasoning = 30
+        let reportedTotal = input + output  // 1120 — Codex's real total
+        let data = """
+        {"type":"session_meta","timestamp":"2026-06-14T12:30:00.000Z","payload":{"id":"session-0006","cwd":"/Users/dev/example"}}
+        {"type":"event_msg","timestamp":"2026-06-14T12:30:01.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\(input),"cached_input_tokens":\(cached),"output_tokens":\(output),"reasoning_output_tokens":\(reasoning),"total_tokens":\(reportedTotal)}}}}
+        """.data(using: .utf8)!
+
+        let summary = try XCTUnwrap(CodexTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "subset.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+
+        // Normalized onto Claude's disjoint convention:
+        XCTAssertEqual(summary.usage.inputTokens, input - cached)  // fresh input only
+        XCTAssertEqual(summary.usage.cacheReadTokens, cached)
+        XCTAssertEqual(summary.usage.outputTokens, output)         // reasoning already inside output
+        // No double-counting: total equals Codex's reported total.
+        XCTAssertEqual(summary.usage.total, reportedTotal)
+        XCTAssertEqual(summary.usage.total, input + output)
     }
 
     func testPermissionPromptFixtureClassifiesAsBlocked() throws {
@@ -410,7 +438,7 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(snapshot.sessions.first?.rawSessionId, "session-0005")
     }
 
-    func testDefaultScannerMatchesExplicitClaudeOnlySource() throws {
+    func testDefaultScannerMatchesExplicitClaudeAndCodexSources() throws {
         let now = Date()
         let recent = iso(now.addingTimeInterval(-5))
         try writeTranscript("proj/abc-123.jsonl", lines: """
@@ -420,9 +448,18 @@ final class TranscriptScannerTests: XCTestCase {
         try writeTranscript("proj/abc-123/subagents/agent-a1.jsonl",
             lines: assistantLine(session: "abc-123", input: 10, output: 5, cacheRead: 100, stopReason: "tool_use", timestamp: recent))
 
-        let defaultSnapshot = claudeOnlyScanner().scan(now: now)
+        // Drive the real convenience init (Claude + Codex defaults), but point Codex
+        // at an empty temp dir so the default wiring is exercised hermetically —
+        // never the real ~/.codex.
+        let emptyCodexDir = projectsDir.appendingPathComponent("empty-codex")
+        try FileManager.default.createDirectory(at: emptyCodexDir, withIntermediateDirectories: true)
+        let defaultSnapshot = TranscriptScanner(
+            projectsDirectory: projectsDir,
+            codexSessionsDirectory: emptyCodexDir
+        ).scan(now: now)
         let explicitSnapshot = TranscriptScanner(sources: [
-            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir)
+            ClaudeCodeTranscriptSource(projectsDirectory: projectsDir),
+            CodexTranscriptSource(sessionsDirectory: emptyCodexDir),
         ]).scan(now: now)
 
         assertSameSnapshot(defaultSnapshot, explicitSnapshot)

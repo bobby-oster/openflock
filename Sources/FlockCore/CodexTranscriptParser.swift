@@ -166,12 +166,20 @@ private struct CodexTranscriptLine: Decodable {
                 case reasoningOutputTokens = "reasoning_output_tokens"
             }
 
+            /// Codex reports nested subsets (verified against real local data,
+            /// 2026-06-14): `total_tokens == input_tokens + output_tokens`, with
+            /// `cached_input_tokens` ⊆ `input_tokens` and `reasoning_output_tokens`
+            /// ⊆ `output_tokens`. Normalize onto the disjoint convention `TokenUsage`
+            /// shares with Claude (input = fresh non-cached part; output already
+            /// includes reasoning) so `total` and cross-producer comparisons stay
+            /// accurate instead of double-counting cache + reasoning.
             var tokenUsage: TokenUsage {
                 var usage = TokenUsage()
                 usage.isKnown = true
-                usage.inputTokens = inputTokens ?? 0
-                usage.outputTokens = (outputTokens ?? 0) + (reasoningOutputTokens ?? 0)
-                usage.cacheReadTokens = cachedInputTokens ?? 0
+                let cached = cachedInputTokens ?? 0
+                usage.inputTokens = max(0, (inputTokens ?? 0) - cached)
+                usage.outputTokens = outputTokens ?? 0
+                usage.cacheReadTokens = cached
                 return usage
             }
         }

@@ -199,7 +199,7 @@ private extension TranscriptProducer {
     var badgeLabel: String {
         switch self {
         case .claudeCode: "Claude"
-        case .codex: "Codex exp."
+        case .codex: "Codex"
         }
     }
 }
