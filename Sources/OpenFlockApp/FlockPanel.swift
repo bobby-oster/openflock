@@ -156,7 +156,6 @@ struct SessionRow: View {
                     .font(.caption2)
                     .lineLimit(1)
             }
-            .help(session.slug ?? session.rawSessionId)
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
                 Text(session.usage.isKnown ? "\(Format.tokens(session.usage.outputTokens)) out" : "— out")
@@ -168,46 +167,41 @@ struct SessionRow: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            dismissControl
-                .frame(width: 18)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.primary.opacity(isHovered && isActionable ? 0.08 : 0))
+        )
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+        .onTapGesture { toggleDismissal() }
+        .help(rowHelp)
     }
 
-    /// Hover-revealed and bi-directional: ✕ to dismiss a waiting/blocked
-    /// session, ↩ to restore a dismissed one. Working and auto-stale rows get an
-    /// empty slot of the same width, so nothing shifts. The list is sorted by
-    /// `lastActivity`, which a dismissal never changes — so the row never moves
-    /// out from under the cursor.
-    @ViewBuilder private var dismissControl: some View {
-        if session.isDismissed {
-            rowButton(symbol: "arrow.uturn.backward", help: "Restore — track this session again") {
-                model.restore(session)
-            }
-        } else if session.state == .waiting || session.state == .blocked {
-            rowButton(symbol: "xmark", help: "Dismiss — stop counting this session") {
-                model.dismiss(session)
-            }
-        } else {
-            Color.clear
-        }
+    /// Click the row to toggle dismissal. Waiting/blocked rows can be dismissed;
+    /// a dismissed row can be restored. Working and auto-stale rows aren't
+    /// actionable — a live agent must never be hidden, and a stale one is
+    /// already out of the count. The list is sorted by `lastActivity`, which a
+    /// dismissal never changes, so a toggled row never moves under the cursor.
+    private var isActionable: Bool {
+        session.isDismissed || session.state == .waiting || session.state == .blocked
     }
 
-    private func rowButton(symbol: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .contentShape(Rectangle())
+    private func toggleDismissal() {
+        guard isActionable else { return }
+        if session.isDismissed { model.restore(session) } else { model.dismiss(session) }
+    }
+
+    /// Doubles as the click hint when the row is actionable; otherwise falls
+    /// back to the session slug.
+    private var rowHelp: String {
+        if session.isDismissed { return "Click to restore — track this session again" }
+        if session.state == .waiting || session.state == .blocked {
+            return "Click to dismiss — stop counting this session"
         }
-        .buttonStyle(.plain)
-        .help(help)
-        .accessibilityLabel(help)
-        // Revealed on hover; hidden (and non-clickable) otherwise.
-        .opacity(isHovered ? 1 : 0)
-        .disabled(!isHovered)
+        return session.slug ?? session.rawSessionId
     }
 
     private var subtitle: AttributedString {
