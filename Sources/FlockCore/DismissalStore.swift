@@ -28,13 +28,7 @@ public struct DismissalStore: Sendable {
     }
 
     /// `$OPENFLOCK_HOME`, or `~/.openflock` when unset.
-    public static var defaultDirectory: URL {
-        if let override = ProcessInfo.processInfo.environment["OPENFLOCK_HOME"], !override.isEmpty {
-            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".openflock", isDirectory: true)
-    }
+    public static var defaultDirectory: URL { OpenFlockHome.directory }
 
     /// When the session was dismissed, or `nil` if it has no dismissal recorded.
     public func dismissedAt(_ id: String) -> Date? { entries[id] }

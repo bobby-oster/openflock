@@ -9,8 +9,21 @@ final class FlockModel {
 
     private let scanner = TranscriptScanner()
     private var timer: Timer?
+    @ObservationIgnored private var settings: SettingsStore
+
+    // Panel component visibility, persisted in ~/.openflock (shared across build
+    // variants and the future CLI — not bundle-scoped UserDefaults).
+    var showThroughput: Bool { didSet { settings.setBool(SettingKey.throughput, showThroughput) } }
+    var showSessionList: Bool { didSet { settings.setBool(SettingKey.sessionList, showSessionList) } }
+    var showMenuBarRate: Bool { didSet { settings.setBool(SettingKey.menuBarRate, showMenuBarRate) } }
 
     init() {
+        let settings = SettingsStore()
+        self.settings = settings
+        self.showThroughput = settings.bool(SettingKey.throughput, default: true)
+        self.showSessionList = settings.bool(SettingKey.sessionList, default: true)
+        self.showMenuBarRate = settings.bool(SettingKey.menuBarRate, default: false)
+
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
             Task { @MainActor [weak self] in self?.refresh() }
@@ -77,4 +90,10 @@ final class FlockModel {
     /// Whether a scan has completed yet — the menu bar shows the app name
     /// until the first snapshot lands.
     var hasScanned: Bool { snapshot != nil }
+}
+
+private enum SettingKey {
+    static let throughput = "component.throughput"
+    static let sessionList = "component.sessionList"
+    static let menuBarRate = "component.menuBarRate"
 }

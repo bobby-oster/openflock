@@ -1,28 +1,17 @@
 import SwiftUI
 import FlockCore
 
-/// Panel component visibility, persisted across launches.
-enum ComponentToggles {
-    static let throughput = "component.throughput"
-    static let sessionList = "component.sessionList"
-    static let menuBarRate = "component.menuBarRate"
-}
-
 struct FlockPanel: View {
-    let model: FlockModel
-
-    @AppStorage(ComponentToggles.throughput) private var showThroughput = true
-    @AppStorage(ComponentToggles.sessionList) private var showSessionList = true
-    @AppStorage(ComponentToggles.menuBarRate) private var showMenuBarRate = false
+    @Bindable var model: FlockModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            if showThroughput {
+            if model.showThroughput {
                 Divider()
                 throughput
             }
-            if showSessionList {
+            if model.showSessionList {
                 Divider()
                 if model.sessions.isEmpty {
                     Text("No agent sessions in the last 24h")
@@ -110,9 +99,9 @@ struct FlockPanel: View {
             }
             Spacer()
             Menu {
-                Toggle("Throughput", isOn: $showThroughput)
-                Toggle("Session list", isOn: $showSessionList)
-                Toggle("Burn rate in menu bar", isOn: $showMenuBarRate)
+                Toggle("Throughput", isOn: $model.showThroughput)
+                Toggle("Session list", isOn: $model.showSessionList)
+                Toggle("Burn rate in menu bar", isOn: $model.showMenuBarRate)
             } label: {
                 Image(systemName: "switch.2")
             }

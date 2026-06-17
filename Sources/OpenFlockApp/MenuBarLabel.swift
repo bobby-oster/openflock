@@ -3,7 +3,6 @@ import FlockCore
 
 struct MenuBarLabel: View {
     let model: FlockModel
-    @AppStorage(ComponentToggles.menuBarRate) private var showMenuBarRate = false
 
     var body: some View {
         Text(content)
@@ -31,7 +30,7 @@ struct MenuBarLabel: View {
         guard !segments.isEmpty else { return "OpenFlock" }
 
         var text = segments.joined(separator: " ")
-        if showMenuBarRate {
+        if model.showMenuBarRate {
             text += " " + Format.rateCompact(perSecond: model.freshPerSecondNow)
         }
         return text
