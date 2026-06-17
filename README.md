@@ -61,6 +61,10 @@ macOS menu bar app (`OpenFlockApp`) is in place. What works today:
   **stale** (no model activity for ~an hour — *inferred* backgrounded or
   abandoned). The same state logic runs for both producers, and the menu bar
   leads with whatever needs attention.
+- **Dismiss** a session you're done with (hover a row → ✕) and it drops out of
+  the attention count right away, reading as stale — no waiting out the ~1h
+  staleness timer. It's activity-keyed: fresh token usage on that session
+  un-dismisses it automatically. Hover again → ↩ to restore.
 - Session list titled by project directory, leading with output tokens
   (cache-inclusive totals on the secondary line); synthetic and empty
   sessions are filtered out. Claude Code sub-agent transcripts fold into their

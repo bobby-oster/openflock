@@ -92,7 +92,7 @@ struct FlockPanel: View {
         ScrollView {
             VStack(spacing: 6) {
                 ForEach(model.sessions) { session in
-                    SessionRow(session: session, showProducerBadge: showProducerBadges)
+                    SessionRow(session: session, showProducerBadge: showProducerBadges, model: model)
                 }
             }
         }
@@ -127,11 +127,13 @@ struct FlockPanel: View {
 struct SessionRow: View {
     let session: AgentSession
     let showProducerBadge: Bool
+    let model: FlockModel
+    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(session.state.color)
+                .fill(session.effectiveState.color)
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
@@ -166,8 +168,46 @@ struct SessionRow: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
+            dismissControl
+                .frame(width: 18)
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+    }
+
+    /// Hover-revealed and bi-directional: ✕ to dismiss a waiting/blocked
+    /// session, ↩ to restore a dismissed one. Working and auto-stale rows get an
+    /// empty slot of the same width, so nothing shifts. The list is sorted by
+    /// `lastActivity`, which a dismissal never changes — so the row never moves
+    /// out from under the cursor.
+    @ViewBuilder private var dismissControl: some View {
+        if session.isDismissed {
+            rowButton(symbol: "arrow.uturn.backward", help: "Restore — track this session again") {
+                model.restore(session)
+            }
+        } else if session.state == .waiting || session.state == .blocked {
+            rowButton(symbol: "xmark", help: "Dismiss — stop counting this session") {
+                model.dismiss(session)
+            }
+        } else {
+            Color.clear
+        }
+    }
+
+    private func rowButton(symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
+        // Revealed on hover; hidden (and non-clickable) otherwise.
+        .opacity(isHovered ? 1 : 0)
+        .disabled(!isHovered)
     }
 
     private var subtitle: AttributedString {
@@ -183,9 +223,9 @@ struct SessionRow: View {
         var result = AttributedString()
         // Lead the actionable states with a colored word; working/stale don't
         // need one — the dot already says it.
-        if session.state == .blocked || session.state == .waiting {
-            var badge = AttributedString(session.state.label + " · ")
-            badge.foregroundColor = session.state.color
+        if session.effectiveState == .blocked || session.effectiveState == .waiting {
+            var badge = AttributedString(session.effectiveState.label + " · ")
+            badge.foregroundColor = session.effectiveState.color
             result += badge
         }
         var rest = AttributedString(detail)
