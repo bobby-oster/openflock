@@ -12,6 +12,9 @@ public struct TranscriptScanner: Sendable {
     /// How far back to collect per-turn token events for throughput math.
     public var eventWindow: TimeInterval
     public var sources: [any TranscriptSource]
+    /// Directory holding the dismissal overlay (`dismissals.json`). Defaults to
+    /// `~/.openflock` (or `$OPENFLOCK_HOME`); injected in tests for hermeticity.
+    public var dismissalsDirectory: URL
 
     public init(
         projectsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -20,11 +23,13 @@ public struct TranscriptScanner: Sendable {
             .appendingPathComponent(".codex/sessions"),
         recencyWindow: TimeInterval = 24 * 3600,
         eventWindow: TimeInterval = 15 * 60,
-        sources: [any TranscriptSource]? = nil
+        sources: [any TranscriptSource]? = nil,
+        dismissalsDirectory: URL = DismissalStore.defaultDirectory
     ) {
         self.projectsDirectory = projectsDirectory
         self.recencyWindow = recencyWindow
         self.eventWindow = eventWindow
+        self.dismissalsDirectory = dismissalsDirectory
         self.sources = sources ?? [
             ClaudeCodeTranscriptSource(
                 projectsDirectory: projectsDirectory,
@@ -48,6 +53,7 @@ public struct TranscriptScanner: Sendable {
             }
         }
 
+        var store = DismissalStore(directory: dismissalsDirectory)
         let sessions = Dictionary(grouping: files, by: SessionKey.init).compactMap { key, members -> AgentSession? in
             guard let newest = members.max(by: { $0.lastActivity < $1.lastActivity }) else { return nil }
             let main = members.first { !$0.isSubagent }
@@ -60,8 +66,13 @@ public struct TranscriptScanner: Sendable {
             func state(of file: TranscriptFileSummary) -> AgentState {
                 AgentSession.state(last: file.lastEvent, age: now.timeIntervalSince(file.lastActivity))
             }
+            let id = "\(key.producer.rawValue):\(key.sessionId)"
+            // The most recently active member drives the session's state: a
+            // running sub-agent keeps the session `.working` even while the
+            // parent's Task tool call sits pending.
+            let derived = state(of: newest)
             return AgentSession(
-                id: "\(key.producer.rawValue):\(key.sessionId)",
+                id: id,
                 rawSessionId: key.sessionId,
                 producer: key.producer,
                 projectPath: primary.cwd ?? "?",
@@ -69,14 +80,18 @@ public struct TranscriptScanner: Sendable {
                 model: primary.model ?? newest.model,
                 usage: usage,
                 lastActivity: newest.lastActivity,
-                // The most recently active member drives the session's state:
-                // a running sub-agent keeps the session `.working` even while
-                // the parent's Task tool call sits pending.
-                state: state(of: newest),
+                state: derived,
+                isDismissed: AgentSession.isDismissed(
+                    state: derived,
+                    lastActivity: newest.lastActivity,
+                    dismissedAt: store.dismissedAt(id)
+                ),
                 subagentCount: subagents.count,
                 activeSubagentCount: subagents.filter { state(of: $0) == .working }.count
             )
         }
+        // Forget dismissals for sessions that have aged out of the scan entirely.
+        store.prune(keeping: Set(sessions.map(\.id)))
         // Empty shells (opened-and-abandoned sessions) are noise once stale.
         let visible = sessions.filter { !($0.usage.total == 0 && $0.state == .stale) }
         return FlockSnapshot(

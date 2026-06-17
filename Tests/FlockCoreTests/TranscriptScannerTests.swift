@@ -41,16 +41,19 @@ final class TranscriptScannerTests: XCTestCase {
     // (~/.claude/projects, ~/.codex/sessions). Co-equal: tests treat both the same,
     // and neither source ever touches the real machine.
     var testRoot: URL!
-    var projectsDir: URL!   // Claude transcripts root
-    var codexDir: URL!      // Codex sessions root
+    var projectsDir: URL!     // Claude transcripts root
+    var codexDir: URL!        // Codex sessions root
+    var dismissalsDir: URL!   // ~/.openflock stand-in — keeps tests off the real machine
 
     override func setUpWithError() throws {
         testRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("openflock-test-\(UUID().uuidString)")
         projectsDir = testRoot.appendingPathComponent("claude")
         codexDir = testRoot.appendingPathComponent("codex")
+        dismissalsDir = testRoot.appendingPathComponent("openflock")
         try FileManager.default.createDirectory(at: projectsDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dismissalsDir, withIntermediateDirectories: true)
     }
 
     override func tearDownWithError() throws {
@@ -82,7 +85,7 @@ final class TranscriptScannerTests: XCTestCase {
         TranscriptScanner(sources: [
             ClaudeCodeTranscriptSource(projectsDirectory: projectsDir),
             CodexTranscriptSource(sessionsDirectory: codexDir),
-        ])
+        ], dismissalsDirectory: dismissalsDir)
     }
 
     private func iso(_ date: Date) -> String {
@@ -386,7 +389,7 @@ final class TranscriptScannerTests: XCTestCase {
         let snapshot = TranscriptScanner(sources: [
             StaticTranscriptSource(producer: .claudeCode, summaries: [claudeSummary]),
             StaticTranscriptSource(producer: .codex, summaries: [codexSummary]),
-        ]).scan(now: now)
+        ], dismissalsDirectory: dismissalsDir).scan(now: now)
 
         XCTAssertEqual(snapshot.sessions.count, 2)
         XCTAssertEqual(snapshot.sessions.filter { $0.rawSessionId == "shared-session" }.count, 2)
@@ -463,7 +466,8 @@ final class TranscriptScannerTests: XCTestCase {
         // sources. codexDir is empty here, so it's exercised hermetically — never ~/.codex.
         let defaultSnapshot = TranscriptScanner(
             projectsDirectory: projectsDir,
-            codexSessionsDirectory: codexDir
+            codexSessionsDirectory: codexDir,
+            dismissalsDirectory: dismissalsDir
         ).scan(now: now)
         let explicitSnapshot = hermeticScanner().scan(now: now)
 
@@ -647,6 +651,105 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(Format.modelShortName("gpt-x"), "gpt-x")
     }
 
+    // MARK: - Dismissal overlay
+
+    /// Writes a dismissal straight into the store the scanner reads.
+    private func dismiss(_ id: String, at date: Date) {
+        var store = DismissalStore(directory: dismissalsDir)
+        store.dismiss(id, at: date)
+    }
+
+    func testDismissedWaitingSessionReadsAsStaleAndLeavesTheCount() throws {
+        let now = Date()
+        try writeTranscript("p/wait.jsonl", lines:
+            assistantLine(session: "wait", output: 1, stopReason: "end_turn", timestamp: iso(now.addingTimeInterval(-30))))
+
+        // Undismissed, it's a waiting session.
+        let before = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertEqual(before.state, .waiting)
+        XCTAssertFalse(before.isDismissed)
+        XCTAssertEqual(before.effectiveState, .waiting)
+
+        dismiss("claudeCode:wait", at: before.lastActivity)
+
+        let after = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertEqual(after.state, .waiting)         // derived state is untouched
+        XCTAssertTrue(after.isDismissed)
+        XCTAssertEqual(after.effectiveState, .stale)  // reads as stale for UI + counts
+        // The session stays visible (it has tokens) but no longer counts as waiting —
+        // exactly what the menu-bar attention count keys off.
+        let sessions = hermeticScanner().scan(now: now).sessions
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.filter { $0.effectiveState == .waiting }.count, 0)
+    }
+
+    func testNewActivityAutomaticallyUndismisses() throws {
+        let now = Date()
+        let dismissedAt = now.addingTimeInterval(-300)
+        try writeTranscript("p/resume.jsonl", lines:
+            assistantLine(session: "resume", output: 1, stopReason: "end_turn", timestamp: iso(dismissedAt)))
+        dismiss("claudeCode:resume", at: dismissedAt)
+
+        // Still dismissed while nothing new has landed.
+        XCTAssertTrue(try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first).isDismissed)
+
+        // A newer model event advances lastActivity past dismissedAt.
+        try writeTranscript("p/resume.jsonl", lines: """
+        \(assistantLine(session: "resume", output: 1, stopReason: "end_turn", timestamp: iso(dismissedAt)))
+        \(assistantLine(session: "resume", output: 2, stopReason: "end_turn", timestamp: iso(now.addingTimeInterval(-5))))
+        """)
+
+        let resumed = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertFalse(resumed.isDismissed)
+        XCTAssertEqual(resumed.effectiveState, .waiting)
+    }
+
+    func testWorkingSessionCannotBeDismissed() throws {
+        let now = Date()
+        try writeTranscript("p/run.jsonl", lines:
+            assistantLine(session: "run", output: 1, stopReason: "tool_use", toolUse: true, timestamp: iso(now.addingTimeInterval(-10))))
+        let running = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertEqual(running.state, .working)
+
+        dismiss("claudeCode:run", at: running.lastActivity)
+
+        let after = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertFalse(after.isDismissed)             // a live agent is never hidden
+        XCTAssertEqual(after.effectiveState, .working)
+    }
+
+    func testBlockedSessionCanBeDismissed() throws {
+        let formatter = fixtureFormatter()
+        let now = try XCTUnwrap(formatter.date(from: "2026-06-14T12:05:00.000Z"))
+        let fixture = try TranscriptFixtureLoader.text(caseName: "permission-prompt-blocked")
+        try writeTranscript("proj/session-0003.jsonl", lines: fixture)
+        let url = projectsDir.appendingPathComponent("proj/session-0003.jsonl")
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
+
+        let blocked = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertEqual(blocked.state, .blocked)
+
+        dismiss("claudeCode:session-0003", at: blocked.lastActivity)
+
+        let after = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertTrue(after.isDismissed)
+        XCTAssertEqual(after.effectiveState, .stale)
+    }
+
+    func testScanPrunesDismissalsForVanishedSessions() throws {
+        let now = Date()
+        // A dismissal for a session no scan will surface…
+        dismiss("claudeCode:ghost", at: now.addingTimeInterval(-100))
+        // …plus a live session so the scan has something to keep.
+        try writeTranscript("p/live.jsonl", lines:
+            assistantLine(session: "live", output: 1, stopReason: "end_turn", timestamp: iso(now.addingTimeInterval(-10))))
+
+        _ = hermeticScanner().scan(now: now)
+
+        // The ghost entry is gone from the freshly-loaded store.
+        XCTAssertNil(DismissalStore(directory: dismissalsDir).dismissedAt("claudeCode:ghost"))
+    }
+
     private func assertSameSnapshot(
         _ lhs: FlockSnapshot,
         _ rhs: FlockSnapshot,
@@ -671,6 +774,7 @@ final class TranscriptScannerTests: XCTestCase {
             XCTAssertEqual(left.usage, right.usage, file: file, line: line)
             XCTAssertEqual(left.lastActivity, right.lastActivity, file: file, line: line)
             XCTAssertEqual(left.state, right.state, file: file, line: line)
+            XCTAssertEqual(left.isDismissed, right.isDismissed, file: file, line: line)
             XCTAssertEqual(left.subagentCount, right.subagentCount, file: file, line: line)
             XCTAssertEqual(left.activeSubagentCount, right.activeSubagentCount, file: file, line: line)
         }

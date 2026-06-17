@@ -58,7 +58,8 @@ macOS menu bar app (`OpenFlockApp`) is in place. What works today:
 - Per-agent state read from the shape of the last transcript event, not file
   mtime: **working** (mid-turn), **waiting** (turn ended, your move),
   **blocked** (a tool call left pending — usually a permission prompt), and
-  **stale**. The same state logic runs for both producers, and the menu bar
+  **stale** (no model activity for ~an hour — *inferred* backgrounded or
+  abandoned). The same state logic runs for both producers, and the menu bar
   leads with whatever needs attention.
 - Session list titled by project directory, leading with output tokens
   (cache-inclusive totals on the secondary line); synthetic and empty
