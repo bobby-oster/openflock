@@ -24,6 +24,10 @@ import XCTest
 // - permission prompt / pending tool call becomes blocked past threshold:
 //   testPermissionPromptFixtureClassifiesAsBlocked
 // - tool result clears pending or blocked state: testToolResultClearsPendingBlockedState
+// - user line classification (prompt ⇒ waiting, tool_result ⇒ streaming, meta
+//   ⇒ skipped): testUserLineClassification
+// - trailing user prompt reads as waiting and is dismissable (not falsely
+//   working/green): testTrailingUserPromptIsWaitingAndDismissable
 // - completed turn becomes waiting: testStateFromLastTranscriptEvent
 //
 // Codex cases:
@@ -33,6 +37,7 @@ import XCTest
 // - source discovery: testCodexSourceDiscoversNestedSessionFiles
 // - parse failures isolated from Claude: testCodexParseFailureDoesNotBlockClaudeSessions
 // - nested token subsets normalized without double-counting: testCodexTokenUsageNormalizesNestedSubsets
+// - trailing user message reads as waiting, not streaming: testCodexTrailingUserMessageReadsAsWaiting
 // Incremental scanner cases are deferred until incremental scanning exists: appends,
 // partial lines, malformed appended lines, truncation, replacement, unchanged-file
 // reuse, event aging, and stale-session recency behavior.
@@ -507,6 +512,73 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertNil(summary.model)
         XCTAssertEqual(summary.usage.outputTokens, 2)
         XCTAssertEqual(summary.lastEvent, .streaming)
+    }
+
+    func testUserLineClassification() throws {
+        let formatter = fixtureFormatter()
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:00:00.000Z"))
+        func lastEvent(of jsonl: String) throws -> AgentSession.LastEvent? {
+            try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
+                data: jsonl.data(using: .utf8)!,
+                from: URL(fileURLWithPath: "user-line.jsonl"),
+                modifiedAt: modifiedAt
+            )).lastEvent
+        }
+
+        // A plain user prompt is the model's turn, not live output ⇒ waiting.
+        XCTAssertEqual(try lastEvent(of:
+            #"{"type":"user","sessionId":"u","timestamp":"2026-06-14T12:00:00.000Z","message":{"role":"user","content":"do the thing"}}"#),
+            .turnEnded)
+        // A tool_result means the model is mid-turn and about to continue ⇒ streaming.
+        XCTAssertEqual(try lastEvent(of:
+            #"{"type":"user","sessionId":"u","timestamp":"2026-06-14T12:00:00.000Z","message":{"role":"user","content":[{"type":"tool_result"}]}}"#),
+            .streaming)
+        // A trailing injected meta line is housekeeping ⇒ it must not become the
+        // last event and revive a finished turn as "working".
+        XCTAssertEqual(try lastEvent(of: """
+        {"type":"assistant","sessionId":"u","timestamp":"2026-06-14T11:59:00.000Z","message":{"model":"claude-fable-5","stop_reason":"end_turn","usage":{"output_tokens":1}}}
+        {"type":"user","sessionId":"u","isMeta":true,"timestamp":"2026-06-14T12:00:00.000Z","message":{"role":"user","content":"<system-reminder>noise</system-reminder>"}}
+        """),
+            .turnEnded)
+    }
+
+    func testTrailingUserPromptIsWaitingAndDismissable() throws {
+        let now = Date()
+        // The shape that left a session falsely green: a finished turn, then the
+        // user sends another prompt the model never picks up. It must read as
+        // waiting (not working) so it can be dismissed.
+        try writeTranscript("p/idle.jsonl", lines: """
+        \(assistantLine(session: "idle", output: 5, stopReason: "end_turn", timestamp: iso(now.addingTimeInterval(-120))))
+        {"type":"user","sessionId":"idle","cwd":"/Users/dev/myproject","timestamp":"\(iso(now.addingTimeInterval(-60)))","message":{"role":"user","content":"another question"}}
+        """)
+
+        let before = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertEqual(before.state, .waiting)   // not .working — the model is idle
+        XCTAssertFalse(before.isDismissed)
+
+        dismiss("claudeCode:idle", at: before.lastActivity)
+
+        let after = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertTrue(after.isDismissed)          // dismissable, unlike a green session
+        XCTAssertEqual(after.effectiveState, .stale)
+    }
+
+    func testCodexTrailingUserMessageReadsAsWaiting() throws {
+        let formatter = fixtureFormatter()
+        let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:00:10.000Z"))
+        let data = """
+        {"type":"session_meta","timestamp":"2026-06-14T12:00:00.000Z","payload":{"id":"codex-idle","cwd":"/Users/dev/example"}}
+        {"type":"response_item","timestamp":"2026-06-14T12:00:05.000Z","payload":{"type":"message","role":"assistant"}}
+        {"type":"response_item","timestamp":"2026-06-14T12:00:10.000Z","payload":{"type":"message","role":"user"}}
+        """.data(using: .utf8)!
+
+        let summary = try XCTUnwrap(CodexTranscriptParser().parse(
+            data: data,
+            from: URL(fileURLWithPath: "codex-idle.jsonl"),
+            modifiedAt: modifiedAt
+        ))
+        // A trailing user prompt ⇒ waiting, not streaming.
+        XCTAssertEqual(summary.lastEvent, .turnEnded)
     }
 
     func testToolResultClearsPendingBlockedState() throws {
