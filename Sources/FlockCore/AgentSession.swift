@@ -5,6 +5,13 @@ import Foundation
 /// lines like titles and file-history snapshots bump mtime without the model
 /// doing anything, and a single working turn can stay silent for many minutes;
 /// both fool a pure-recency heuristic, so we read the transcript instead.)
+///
+/// This is the purely *derived* state. It pairs with one manual overlay — a
+/// user *dismissal* (`AgentSession.isDismissed`), which forces a session to
+/// read as `.stale` regardless of derivation; see `AgentSession.effectiveState`.
+/// So "is this demanding attention?" has two ways to land on `.stale`: this
+/// case means *inferred*-abandoned (automatic, past `staleThreshold`), whereas
+/// a dismissal is *user*-asserted "done" (manual, reverses on new activity).
 public enum AgentState: String, Sendable, CaseIterable {
     /// Mid-turn: the model is streaming output or running a tool. Green ▲.
     case working
@@ -13,7 +20,9 @@ public enum AgentState: String, Sendable, CaseIterable {
     /// A tool call has been pending with no result past `blockedThreshold` —
     /// almost always an unanswered permission prompt. Red ■.
     case blocked
-    /// No model activity for over `staleThreshold` — backgrounded/abandoned. Gray.
+    /// No model activity for over `staleThreshold` — *inferred* as
+    /// backgrounded/abandoned (automatic; the manual sibling is a user
+    /// dismissal, which also reads as stale). Gray.
     case stale
 }
 
@@ -64,6 +73,11 @@ public struct AgentSession: Identifiable, Sendable {
     /// which housekeeping writes bump without the model doing anything.
     public let lastActivity: Date
     public let state: AgentState
+    /// Whether the user has dismissed this session ("I'm no longer tracking
+    /// this"). A manual overlay on the derived `state` — see `effectiveState`
+    /// and `DismissalStore`. Only `.waiting`/`.blocked` sessions are ever
+    /// dismissed, and new model activity clears it automatically.
+    public let isDismissed: Bool
     /// Sub-agent transcripts seen within the scan window.
     public let subagentCount: Int
     /// Sub-agents currently in the `.working` state.
@@ -72,6 +86,11 @@ public struct AgentSession: Identifiable, Sendable {
     public var projectName: String {
         URL(fileURLWithPath: projectPath).lastPathComponent
     }
+
+    /// The state the UI and the attention counts should use: a dismissed
+    /// session reads as `.stale` (out of the count, grey, no label) while the
+    /// purely-derived `state` stays available for introspection.
+    public var effectiveState: AgentState { isDismissed ? .stale : state }
 
     /// The shape of the last model event in a transcript — the input to state
     /// classification. Derived from `stop_reason` and whether a tool call is
@@ -102,5 +121,25 @@ public struct AgentSession: Identifiable, Sendable {
         case .turnEnded: return .waiting
         case .toolPending: return age < blockedThreshold ? .working : .blocked
         }
+    }
+
+    /// Grace beyond a dismissal's recorded `lastActivity` within which a session
+    /// is still treated as dismissed. Wide enough to absorb sub-second
+    /// timestamp-serialization drift through the store, far tighter than the gap
+    /// before any genuine resumption (which lands seconds+ later), so it never
+    /// masks real activity.
+    public static let dismissalActivityTolerance: TimeInterval = 1
+
+    /// Whether a session is *effectively dismissed*: the user marked it
+    /// dismissed and no new model activity has landed since. Only
+    /// `.waiting`/`.blocked` sessions qualify — a `.working` one would mask a
+    /// live, token-burning agent, and a `.stale` one is already out of the
+    /// count. Activity-keyed: a `lastActivity` past `dismissedAt` (beyond the
+    /// tolerance) clears it.
+    public static func isDismissed(
+        state: AgentState, lastActivity: Date, dismissedAt: Date?
+    ) -> Bool {
+        guard state == .waiting || state == .blocked, let dismissedAt else { return false }
+        return lastActivity.timeIntervalSince(dismissedAt) <= dismissalActivityTolerance
     }
 }

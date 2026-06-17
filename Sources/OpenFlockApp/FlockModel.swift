@@ -31,10 +31,12 @@ final class FlockModel {
     var lastScan: Date? { snapshot?.scannedAt }
     var hasMultipleProducers: Bool { Set(sessions.map(\.producer)).count > 1 }
 
-    var workingCount: Int { sessions.filter { $0.state == .working }.count }
-    var waitingCount: Int { sessions.filter { $0.state == .waiting }.count }
-    var blockedCount: Int { sessions.filter { $0.state == .blocked }.count }
-    var staleCount: Int { sessions.filter { $0.state == .stale }.count }
+    // Counts use `effectiveState`, so a dismissed session drops out of the
+    // attention counts (working/waiting/blocked) and reads as stale.
+    var workingCount: Int { sessions.filter { $0.effectiveState == .working }.count }
+    var waitingCount: Int { sessions.filter { $0.effectiveState == .waiting }.count }
+    var blockedCount: Int { sessions.filter { $0.effectiveState == .blocked }.count }
+    var staleCount: Int { sessions.filter { $0.effectiveState == .stale }.count }
 
     /// Sessions plus their sub-agents.
     var agentCount: Int { sessions.reduce(0) { $0 + 1 + $1.subagentCount } }
