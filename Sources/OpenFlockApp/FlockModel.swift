@@ -27,6 +27,22 @@ final class FlockModel {
         }
     }
 
+    /// Dismiss a session ("I'm no longer tracking this") — it drops out of the
+    /// attention count and reads as stale. Keyed to the session's current
+    /// `lastActivity`, so fresh token usage on it auto-undismisses it.
+    func dismiss(_ session: AgentSession) {
+        var store = DismissalStore()
+        store.dismiss(session.id, at: session.lastActivity)
+        refresh()
+    }
+
+    /// Undo a dismissal — the session returns to its derived state and count.
+    func restore(_ session: AgentSession) {
+        var store = DismissalStore()
+        store.restore(session.id)
+        refresh()
+    }
+
     var sessions: [AgentSession] { snapshot?.sessions ?? [] }
     var lastScan: Date? { snapshot?.scannedAt }
     var hasMultipleProducers: Bool { Set(sessions.map(\.producer)).count > 1 }
