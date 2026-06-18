@@ -87,13 +87,12 @@ public struct CodexTranscriptParser {
                     lastEvent = openToolCalls.isEmpty ? .streaming : .toolPending
                     markMeaningful(line)
                 case "message":
-                    // A settled conversational message, not live output: the
-                    // model's reply (turn ended) or the user's prompt (the
-                    // model's turn, but it is not streaming). A trailing user
-                    // prompt must read as waiting/dismissable, never working —
-                    // live model output arrives as `reasoning` / `agent_message`
-                    // / tool-call items, which set `.streaming` above.
-                    lastEvent = .turnEnded
+                    // The model's reply ends the turn (waiting on the user); a
+                    // user message means the model is, or is about to be,
+                    // producing — so a trailing prompt reads as working and
+                    // flips back the moment a reply is sent, rather than
+                    // lingering as waiting until the first output item lands.
+                    lastEvent = line.payload.role == "user" ? .streaming : .turnEnded
                     markMeaningful(line)
                 case "reasoning":
                     lastEvent = .streaming

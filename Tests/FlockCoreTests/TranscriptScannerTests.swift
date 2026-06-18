@@ -24,10 +24,14 @@ import XCTest
 // - permission prompt / pending tool call becomes blocked past threshold:
 //   testPermissionPromptFixtureClassifiesAsBlocked
 // - tool result clears pending or blocked state: testToolResultClearsPendingBlockedState
-// - user line classification (prompt ⇒ waiting, tool_result ⇒ streaming, meta
-//   ⇒ skipped): testUserLineClassification
-// - trailing user prompt reads as waiting and is dismissable (not falsely
-//   working/green): testTrailingUserPromptIsWaitingAndDismissable
+// - user line classification (prompt + tool_result ⇒ streaming, meta ⇒
+//   skipped): testUserLineClassification
+// - CLI control artifacts (command echo / local-command output / interrupt
+//   marker) skipped, don't revive a finished turn: testControlArtifactsAreSkipped
+// - trailing prompt reads as working so a reply flips the row active:
+//   testTrailingPromptReadsAsWorking
+// - an exited session rests on its prior turn (waiting) and is dismissable:
+//   testExitedSessionRestsOnPriorTurnAndIsDismissable
 // - completed turn becomes waiting: testStateFromLastTranscriptEvent
 //
 // Codex cases:
@@ -37,7 +41,7 @@ import XCTest
 // - source discovery: testCodexSourceDiscoversNestedSessionFiles
 // - parse failures isolated from Claude: testCodexParseFailureDoesNotBlockClaudeSessions
 // - nested token subsets normalized without double-counting: testCodexTokenUsageNormalizesNestedSubsets
-// - trailing user message reads as waiting, not streaming: testCodexTrailingUserMessageReadsAsWaiting
+// - trailing user message reads as working, not waiting: testCodexTrailingUserMessageReadsAsWorking
 // Incremental scanner cases are deferred until incremental scanning exists: appends,
 // partial lines, malformed appended lines, truncation, replacement, unchanged-file
 // reuse, event aging, and stale-session recency behavior.
@@ -514,71 +518,118 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(summary.lastEvent, .streaming)
     }
 
-    func testUserLineClassification() throws {
+    private func claudeLastEvent(of jsonl: String) throws -> AgentSession.LastEvent? {
         let formatter = fixtureFormatter()
         let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:00:00.000Z"))
-        func lastEvent(of jsonl: String) throws -> AgentSession.LastEvent? {
-            try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
-                data: jsonl.data(using: .utf8)!,
-                from: URL(fileURLWithPath: "user-line.jsonl"),
-                modifiedAt: modifiedAt
-            )).lastEvent
-        }
+        return try XCTUnwrap(ClaudeCodeTranscriptParser().parse(
+            data: jsonl.data(using: .utf8)!,
+            from: URL(fileURLWithPath: "user-line.jsonl"),
+            modifiedAt: modifiedAt
+        )).lastEvent
+    }
 
-        // A plain user prompt is the model's turn, not live output ⇒ waiting.
-        XCTAssertEqual(try lastEvent(of:
+    func testUserLineClassification() throws {
+        // A genuine prompt means the model is about to produce ⇒ streaming, so a
+        // reply flips the row back to working without waiting for first output.
+        XCTAssertEqual(try claudeLastEvent(of:
             #"{"type":"user","sessionId":"u","timestamp":"2026-06-14T12:00:00.000Z","message":{"role":"user","content":"do the thing"}}"#),
-            .turnEnded)
+            .streaming)
         // A tool_result means the model is mid-turn and about to continue ⇒ streaming.
-        XCTAssertEqual(try lastEvent(of:
+        XCTAssertEqual(try claudeLastEvent(of:
             #"{"type":"user","sessionId":"u","timestamp":"2026-06-14T12:00:00.000Z","message":{"role":"user","content":[{"type":"tool_result"}]}}"#),
             .streaming)
         // A trailing injected meta line is housekeeping ⇒ it must not become the
-        // last event and revive a finished turn as "working".
-        XCTAssertEqual(try lastEvent(of: """
+        // last event and revive a finished turn.
+        XCTAssertEqual(try claudeLastEvent(of: """
         {"type":"assistant","sessionId":"u","timestamp":"2026-06-14T11:59:00.000Z","message":{"model":"claude-fable-5","stop_reason":"end_turn","usage":{"output_tokens":1}}}
         {"type":"user","sessionId":"u","isMeta":true,"timestamp":"2026-06-14T12:00:00.000Z","message":{"role":"user","content":"<system-reminder>noise</system-reminder>"}}
         """),
             .turnEnded)
     }
 
-    func testTrailingUserPromptIsWaitingAndDismissable() throws {
+    func testControlArtifactsAreSkipped() throws {
+        // CLI control lines carry the `user` role but are not human turns. Each,
+        // appearing after a finished turn, must be skipped so the session keeps
+        // resting on the assistant's end_turn rather than being revived.
+        let finishedTurn =
+            #"{"type":"assistant","sessionId":"u","timestamp":"2026-06-14T11:59:00.000Z","message":{"model":"claude-fable-5","stop_reason":"end_turn","usage":{"output_tokens":1}}}"#
+        func trailing(_ content: String) -> String {
+            """
+            \(finishedTurn)
+            {"type":"user","sessionId":"u","timestamp":"2026-06-14T12:00:00.000Z","message":{"role":"user","content":\(content)}}
+            """
+        }
+        // Slash-command echo as a plain string (matched on the wrapper tag, not
+        // on any particular command).
+        XCTAssertEqual(try claudeLastEvent(of: trailing(
+            #""<command-name>/exit</command-name><command-message>exit</command-message>""#)),
+            .turnEnded)
+        // The local-command output that follows a command.
+        XCTAssertEqual(try claudeLastEvent(of: trailing(
+            #""<local-command-stdout>Goodbye!</local-command-stdout>""#)),
+            .turnEnded)
+        // An interrupt marker carried inside a text block.
+        XCTAssertEqual(try claudeLastEvent(of: trailing(
+            #"[{"type":"text","text":"[Request interrupted by user]"}]"#)),
+            .turnEnded)
+    }
+
+    func testTrailingPromptReadsAsWorking() throws {
         let now = Date()
-        // The shape that left a session falsely green: a finished turn, then the
-        // user sends another prompt the model never picks up. It must read as
-        // waiting (not working) so it can be dismissed.
-        try writeTranscript("p/idle.jsonl", lines: """
-        \(assistantLine(session: "idle", output: 5, stopReason: "end_turn", timestamp: iso(now.addingTimeInterval(-120))))
-        {"type":"user","sessionId":"idle","cwd":"/Users/dev/myproject","timestamp":"\(iso(now.addingTimeInterval(-60)))","message":{"role":"user","content":"another question"}}
+        // A finished turn, then the user sends a reply. It must read as working
+        // immediately — the row flips green on submit, not only once the model's
+        // first output line lands.
+        try writeTranscript("p/reply.jsonl", lines: """
+        \(assistantLine(session: "reply", output: 5, stopReason: "end_turn", timestamp: iso(now.addingTimeInterval(-120))))
+        {"type":"user","sessionId":"reply","cwd":"/Users/dev/myproject","timestamp":"\(iso(now.addingTimeInterval(-5)))","message":{"role":"user","content":"another question"}}
+        """)
+
+        let session = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertEqual(session.state, .working)
+    }
+
+    func testExitedSessionRestsOnPriorTurnAndIsDismissable() throws {
+        let now = Date()
+        // The real-world abandon-and-exit shape: a finished turn, then the
+        // `/exit` command echo and its stdout. The artifacts are skipped, so the
+        // session rests on the assistant's end_turn — waiting, and dismissable —
+        // instead of being revived as activity by the command lines.
+        try writeTranscript("p/exited.jsonl", lines: """
+        \(assistantLine(session: "exited", output: 5, stopReason: "end_turn", timestamp: iso(now.addingTimeInterval(-120))))
+        {"type":"user","sessionId":"exited","cwd":"/Users/dev/myproject","timestamp":"\(iso(now.addingTimeInterval(-60)))","message":{"role":"user","content":"<command-name>/exit</command-name><command-message>exit</command-message>"}}
+        {"type":"user","sessionId":"exited","cwd":"/Users/dev/myproject","timestamp":"\(iso(now.addingTimeInterval(-60)))","message":{"role":"user","content":"<local-command-stdout>Goodbye!</local-command-stdout>"}}
         """)
 
         let before = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
-        XCTAssertEqual(before.state, .waiting)   // not .working — the model is idle
-        XCTAssertFalse(before.isDismissed)
+        XCTAssertEqual(before.state, .waiting)
+        // lastActivity rests on the model's turn, not the trailing /exit lines.
+        let turnTimestamp = ClaudeCodeTranscriptParser.defaultFormatter.date(
+            from: iso(now.addingTimeInterval(-120)))
+        XCTAssertEqual(before.lastActivity, turnTimestamp)
 
-        dismiss("claudeCode:idle", at: before.lastActivity)
+        dismiss("claudeCode:exited", at: before.lastActivity)
 
         let after = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
-        XCTAssertTrue(after.isDismissed)          // dismissable, unlike a green session
+        XCTAssertTrue(after.isDismissed)
         XCTAssertEqual(after.effectiveState, .stale)
     }
 
-    func testCodexTrailingUserMessageReadsAsWaiting() throws {
+    func testCodexTrailingUserMessageReadsAsWorking() throws {
         let formatter = fixtureFormatter()
         let modifiedAt = try XCTUnwrap(formatter.date(from: "2026-06-14T12:00:10.000Z"))
         let data = """
-        {"type":"session_meta","timestamp":"2026-06-14T12:00:00.000Z","payload":{"id":"codex-idle","cwd":"/Users/dev/example"}}
+        {"type":"session_meta","timestamp":"2026-06-14T12:00:00.000Z","payload":{"id":"codex-reply","cwd":"/Users/dev/example"}}
         {"type":"response_item","timestamp":"2026-06-14T12:00:05.000Z","payload":{"type":"message","role":"assistant"}}
         {"type":"response_item","timestamp":"2026-06-14T12:00:10.000Z","payload":{"type":"message","role":"user"}}
         """.data(using: .utf8)!
 
         let summary = try XCTUnwrap(CodexTranscriptParser().parse(
             data: data,
-            from: URL(fileURLWithPath: "codex-idle.jsonl"),
+            from: URL(fileURLWithPath: "codex-reply.jsonl"),
             modifiedAt: modifiedAt
         ))
-        // A trailing user prompt ⇒ waiting, not streaming.
-        XCTAssertEqual(summary.lastEvent, .turnEnded)
+        // A trailing user prompt ⇒ working (the model is about to produce), not waiting.
+        XCTAssertEqual(summary.lastEvent, .streaming)
     }
 
     func testToolResultClearsPendingBlockedState() throws {
@@ -776,18 +827,31 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertEqual(resumed.effectiveState, .waiting)
     }
 
-    func testWorkingSessionCannotBeDismissed() throws {
+    func testWorkingSessionCanBeDismissedAndActivityRestoresIt() throws {
         let now = Date()
         try writeTranscript("p/run.jsonl", lines:
             assistantLine(session: "run", output: 1, stopReason: "tool_use", toolUse: true, timestamp: iso(now.addingTimeInterval(-10))))
         let running = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
         XCTAssertEqual(running.state, .working)
 
+        // Any state can be dismissed now — including a working one.
         dismiss("claudeCode:run", at: running.lastActivity)
 
-        let after = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
-        XCTAssertFalse(after.isDismissed)             // a live agent is never hidden
-        XCTAssertEqual(after.effectiveState, .working)
+        let dismissed = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertTrue(dismissed.isDismissed)
+        XCTAssertEqual(dismissed.effectiveState, .stale)
+
+        // The activity key is the safety net: a newer model event advances
+        // lastActivity past the dismissal, so a still-live agent reappears on its
+        // own and is never durably hidden.
+        try writeTranscript("p/run.jsonl", lines: """
+        \(assistantLine(session: "run", output: 1, stopReason: "tool_use", toolUse: true, timestamp: iso(now.addingTimeInterval(-10))))
+        \(assistantLine(session: "run", output: 2, stopReason: "tool_use", toolUse: true, timestamp: iso(now.addingTimeInterval(-2))))
+        """)
+
+        let resumed = try XCTUnwrap(hermeticScanner().scan(now: now).sessions.first)
+        XCTAssertFalse(resumed.isDismissed)
+        XCTAssertEqual(resumed.effectiveState, .working)
     }
 
     func testBlockedSessionCanBeDismissed() throws {

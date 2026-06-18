@@ -89,21 +89,22 @@ public struct ClaudeCodeTranscriptParser {
                 }
                 lastEventTimestamp = entry.timestamp ?? lastEventTimestamp
             case "user"?:
-                // A `user` line is one of three things, and only one is live
-                // model activity:
-                //   • a tool_result — the model is mid-turn and about to keep
-                //     going ⇒ .streaming (working)
-                //   • a fresh prompt — the user spoke and the model has *not*
-                //     answered yet; its turn, but it is not producing
-                //     ⇒ .turnEnded (waiting, and therefore dismissable)
-                //   • an injected meta line (system reminders, command echoes)
-                //     — pure housekeeping, not a conversation event ⇒ skip
-                // Classifying a trailing prompt or meta line as .streaming is
-                // what left an idle/abandoned session falsely "working" (green,
-                // undismissable) for a whole stale window after the user
-                // walked away mid-prompt.
+                // A `user` line carries the user's role, but not every one is a
+                // human turn or model activity. Skip the lines that are neither,
+                // so they cannot masquerade as activity:
+                //   • injected meta lines (`isMeta`) — system reminders, etc.
+                //   • CLI control artifacts — slash-command echoes, local-command
+                //     output, interrupt markers — matched on Claude Code's
+                //     wrapper tags, not any specific command.
+                // Skipping leaves the session resting on its prior model event,
+                // so a finished turn followed only by, say, a `/exit` echo stays
+                // `.waiting` (and dismissable) instead of being revived as
+                // activity. Anything that remains — a fresh prompt or a
+                // tool_result — means the model is, or is about to be, producing,
+                // so a reply flips the session back to working immediately.
                 if entry.isMeta == true { break }
-                lastEvent = entry.message?.content?.containsToolResult == true ? .streaming : .turnEnded
+                if entry.message?.content?.isControlArtifact == true { break }
+                lastEvent = .streaming
                 lastEventTimestamp = entry.timestamp ?? lastEventTimestamp
             default:
                 break
@@ -140,19 +141,25 @@ private struct TranscriptLine: Decodable {
     }
 
     /// A message's `content` is either a plain string or an array of typed
-    /// blocks. We only need to know whether a `tool_use` block is present.
+    /// blocks. We inspect it for a `tool_use` block and for the textual content
+    /// used to recognize CLI control artifacts.
     enum Content: Decodable {
-        case text
+        case text(String)
         case blocks([Block])
 
-        struct Block: Decodable { let type: String? }
+        struct Block: Decodable {
+            let type: String?
+            let text: String?
+        }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.singleValueContainer()
             if let blocks = try? container.decode([Block].self) {
                 self = .blocks(blocks)
+            } else if let string = try? container.decode(String.self) {
+                self = .text(string)
             } else {
-                self = .text
+                self = .text("")
             }
         }
 
@@ -163,11 +170,26 @@ private struct TranscriptLine: Decodable {
             return false
         }
 
-        var containsToolResult: Bool {
-            if case .blocks(let blocks) = self {
-                return blocks.contains { $0.type == "tool_result" }
+        /// The textual content, flattened across any text blocks, for marker tests.
+        private var flatText: String {
+            switch self {
+            case .text(let string): return string
+            case .blocks(let blocks): return blocks.compactMap(\.text).joined(separator: " ")
             }
-            return false
+        }
+
+        /// A CLI-emitted control line that carries the `user` role but is not a
+        /// human turn: a slash-command echo, local-command output, or an
+        /// interrupt marker. Matched on Claude Code's wrapper tags, so it covers
+        /// every command — and every user — rather than one prompting style.
+        var isControlArtifact: Bool {
+            let text = flatText
+            let markers = [
+                "<command-name>", "<command-message>", "<command-args>",
+                "<local-command-stdout>", "<local-command-stderr>",
+                "[Request interrupted",
+            ]
+            return markers.contains { text.contains($0) }
         }
     }
 

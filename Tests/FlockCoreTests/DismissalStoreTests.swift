@@ -63,25 +63,23 @@ final class DismissalStoreTests: XCTestCase {
 
     // MARK: - The classification rule
 
-    func testDismissalRuleOnlyAppliesToWaitingAndBlocked() {
+    func testDismissalRuleAppliesWhileNoNewActivityHasLanded() {
         let t = Date()
-        // Waiting / blocked with no new activity ⇒ dismissed.
-        XCTAssertTrue(AgentSession.isDismissed(state: .waiting, lastActivity: t, dismissedAt: t))
-        XCTAssertTrue(AgentSession.isDismissed(state: .blocked, lastActivity: t, dismissedAt: t))
-        // Working ⇒ never (would mask a live agent); stale ⇒ never (already out of the count).
-        XCTAssertFalse(AgentSession.isDismissed(state: .working, lastActivity: t, dismissedAt: t))
-        XCTAssertFalse(AgentSession.isDismissed(state: .stale, lastActivity: t, dismissedAt: t))
+        // Any state with no new activity since the dismissal ⇒ dismissed. The
+        // derived state is no longer a gate; the activity key is.
+        XCTAssertTrue(AgentSession.isDismissed(lastActivity: t, dismissedAt: t))
         // No dismissal recorded ⇒ false.
-        XCTAssertFalse(AgentSession.isDismissed(state: .waiting, lastActivity: t, dismissedAt: nil))
+        XCTAssertFalse(AgentSession.isDismissed(lastActivity: t, dismissedAt: nil))
     }
 
     func testDismissalRuleClearsOnceActivityAdvances() {
         let dismissedAt = Date()
-        // A genuinely new event (seconds later) clears the dismissal.
+        // A genuinely new event (seconds later) clears the dismissal — the
+        // safety net that keeps a still-live agent from staying hidden.
         let later = dismissedAt.addingTimeInterval(10)
-        XCTAssertFalse(AgentSession.isDismissed(state: .waiting, lastActivity: later, dismissedAt: dismissedAt))
+        XCTAssertFalse(AgentSession.isDismissed(lastActivity: later, dismissedAt: dismissedAt))
         // Sub-second timestamp drift (same instant) stays dismissed.
         let drift = dismissedAt.addingTimeInterval(0.2)
-        XCTAssertTrue(AgentSession.isDismissed(state: .waiting, lastActivity: drift, dismissedAt: dismissedAt))
+        XCTAssertTrue(AgentSession.isDismissed(lastActivity: drift, dismissedAt: dismissedAt))
     }
 }
