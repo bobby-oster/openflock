@@ -89,9 +89,21 @@ public struct ClaudeCodeTranscriptParser {
                 }
                 lastEventTimestamp = entry.timestamp ?? lastEventTimestamp
             case "user"?:
-                // A prompt or a tool result means the model is, or is about
-                // to be, producing. It is not a turn-ending event.
-                lastEvent = .streaming
+                // A `user` line is one of three things, and only one is live
+                // model activity:
+                //   • a tool_result — the model is mid-turn and about to keep
+                //     going ⇒ .streaming (working)
+                //   • a fresh prompt — the user spoke and the model has *not*
+                //     answered yet; its turn, but it is not producing
+                //     ⇒ .turnEnded (waiting, and therefore dismissable)
+                //   • an injected meta line (system reminders, command echoes)
+                //     — pure housekeeping, not a conversation event ⇒ skip
+                // Classifying a trailing prompt or meta line as .streaming is
+                // what left an idle/abandoned session falsely "working" (green,
+                // undismissable) for a whole stale window after the user
+                // walked away mid-prompt.
+                if entry.isMeta == true { break }
+                lastEvent = entry.message?.content?.containsToolResult == true ? .streaming : .turnEnded
                 lastEventTimestamp = entry.timestamp ?? lastEventTimestamp
             default:
                 break
@@ -150,6 +162,13 @@ private struct TranscriptLine: Decodable {
             }
             return false
         }
+
+        var containsToolResult: Bool {
+            if case .blocks(let blocks) = self {
+                return blocks.contains { $0.type == "tool_result" }
+            }
+            return false
+        }
     }
 
     struct Usage: Decodable {
@@ -182,4 +201,7 @@ private struct TranscriptLine: Decodable {
     let slug: String?
     let timestamp: String?
     let message: Message?
+    /// Marks an injected housekeeping line (system reminders, command echoes)
+    /// that carries the `user` role but is not a conversation event.
+    let isMeta: Bool?
 }

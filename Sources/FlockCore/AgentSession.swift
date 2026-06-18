@@ -98,7 +98,9 @@ public struct AgentSession: Identifiable, Sendable {
     public enum LastEvent: Sendable {
         /// Streaming output, or a tool result just landed — model is producing.
         case streaming
-        /// `stop_reason: end_turn` — the turn finished, waiting on the user.
+        /// The turn is settled and nothing is streaming: either the model ended
+        /// its turn (`stop_reason: end_turn`) or the user sent a prompt the
+        /// model has not started answering. Both read as `.waiting`.
         case turnEnded
         /// A tool call with no result yet — running if fresh, blocked if not.
         case toolPending
