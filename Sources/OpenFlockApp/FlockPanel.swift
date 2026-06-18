@@ -205,10 +205,15 @@ struct SessionRow: View {
 
         var result = AttributedString()
         // Lead the actionable states with a colored word; working/stale don't
-        // need one — the dot already says it.
-        if session.effectiveState == .blocked || session.effectiveState == .waiting {
-            var badge = AttributedString(session.effectiveState.label + " · ")
-            badge.foregroundColor = session.effectiveState.color
+        // need one — the dot already says it. This keys off the *underlying*
+        // `state`, not `effectiveState`: a dismissed row keeps its grey dot (it
+        // is out of the attention counts), but the yellow "waiting" / red
+        // "blocked" word still shows which live state the dismissal overrode —
+        // so the grey reads as "you set this aside," not "the staleness clock
+        // fired." Non-dismissed rows are unaffected (state == effectiveState).
+        if session.state == .blocked || session.state == .waiting {
+            var badge = AttributedString(session.state.label + " · ")
+            badge.foregroundColor = session.state.color
             result += badge
         }
         var rest = AttributedString(detail)
