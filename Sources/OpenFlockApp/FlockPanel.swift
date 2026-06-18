@@ -169,13 +169,15 @@ struct SessionRow: View {
         .help(rowHelp)
     }
 
-    /// Click the row to toggle dismissal. Waiting/blocked rows can be dismissed;
-    /// a dismissed row can be restored. Working and auto-stale rows aren't
-    /// actionable — a live agent must never be hidden, and a stale one is
-    /// already out of the count. The list is sorted by `lastActivity`, which a
-    /// dismissal never changes, so a toggled row never moves under the cursor.
+    /// Click the row to toggle dismissal. Any active row — working, waiting, or
+    /// blocked — can be dismissed, and a dismissed row can be restored. Only an
+    /// auto-stale row is inert: it is already out of the count, with nothing to
+    /// toggle. Dismissing a working session is safe because its next model event
+    /// auto-undismisses it, so a live agent is never durably hidden. The list is
+    /// sorted by `lastActivity`, which a dismissal never changes, so a toggled
+    /// row never moves under the cursor.
     private var isActionable: Bool {
-        session.isDismissed || session.state == .waiting || session.state == .blocked
+        session.isDismissed || session.state != .stale
     }
 
     private func toggleDismissal() {
@@ -187,7 +189,7 @@ struct SessionRow: View {
     /// back to the session slug.
     private var rowHelp: String {
         if session.isDismissed { return "Click to restore — track this session again" }
-        if session.state == .waiting || session.state == .blocked {
+        if session.state != .stale {
             return "Click to dismiss — stop counting this session"
         }
         return session.slug ?? session.rawSessionId

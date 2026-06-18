@@ -9,7 +9,7 @@ import Foundation
 /// `lastActivity` has not advanced past the stored timestamp, so any new model
 /// event (fresh token usage, a finished turn, a tool result) silently clears it
 /// — no timer, no polling. The classification rule lives in
-/// `AgentSession.isDismissed(state:lastActivity:dismissedAt:)`.
+/// `AgentSession.isDismissed(lastActivity:dismissedAt:)`.
 ///
 /// This is a derived UX overlay, not a source of truth: a missing or corrupt
 /// file means "nothing dismissed" and never fails a scan. It lives next to the

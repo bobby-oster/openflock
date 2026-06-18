@@ -75,8 +75,8 @@ public struct AgentSession: Identifiable, Sendable {
     public let state: AgentState
     /// Whether the user has dismissed this session ("I'm no longer tracking
     /// this"). A manual overlay on the derived `state` — see `effectiveState`
-    /// and `DismissalStore`. Only `.waiting`/`.blocked` sessions are ever
-    /// dismissed, and new model activity clears it automatically.
+    /// and `DismissalStore`. Any session can be dismissed; new model activity
+    /// clears it automatically, so a live agent never stays hidden.
     public let isDismissed: Bool
     /// Sub-agent transcripts seen within the scan window.
     public let subagentCount: Int
@@ -133,15 +133,17 @@ public struct AgentSession: Identifiable, Sendable {
     public static let dismissalActivityTolerance: TimeInterval = 1
 
     /// Whether a session is *effectively dismissed*: the user marked it
-    /// dismissed and no new model activity has landed since. Only
-    /// `.waiting`/`.blocked` sessions qualify — a `.working` one would mask a
-    /// live, token-burning agent, and a `.stale` one is already out of the
-    /// count. Activity-keyed: a `lastActivity` past `dismissedAt` (beyond the
-    /// tolerance) clears it.
+    /// dismissed and no new model activity has landed since. Any state can be
+    /// dismissed — the activity key is the safety net. Dismissing a genuinely
+    /// `.working` session is harmless: its next model event advances
+    /// `lastActivity` past `dismissedAt` and auto-undismisses it, so a live,
+    /// token-burning agent can never stay hidden — a dismissal only *sticks* on
+    /// a session that has actually gone quiet. Activity-keyed: a `lastActivity`
+    /// past `dismissedAt` (beyond the tolerance) clears it.
     public static func isDismissed(
-        state: AgentState, lastActivity: Date, dismissedAt: Date?
+        lastActivity: Date, dismissedAt: Date?
     ) -> Bool {
-        guard state == .waiting || state == .blocked, let dismissedAt else { return false }
+        guard let dismissedAt else { return false }
         return lastActivity.timeIntervalSince(dismissedAt) <= dismissalActivityTolerance
     }
 }

@@ -82,7 +82,6 @@ public struct TranscriptScanner: Sendable {
                 lastActivity: newest.lastActivity,
                 state: derived,
                 isDismissed: AgentSession.isDismissed(
-                    state: derived,
                     lastActivity: newest.lastActivity,
                     dismissedAt: store.dismissedAt(id)
                 ),
